@@ -43,10 +43,14 @@ description: "Implementation tasks for Feature 001: nate_ntm Swarm Runtime Orche
 **⚠️ CRITICAL**: No user story work should begin until this phase is complete.
 
 - [ ] T004 Implement `SwarmMetadata` and `AgentMetadata` persistence (load/save and basic validation) in `src/nate_ntm/runtime/metadata_store.py` using the layout and invariants from `specs/001-swarm-runtime-orchestrator/data-model.md`.
+- [ ] T038 Implement atomic metadata write semantics in `src/nate_ntm/runtime/metadata_store.py` for all `SwarmMetadata` and `AgentMetadata` persistence operations: write to a temporary file, flush/fsync if practical, then rename into place so that `.nate_ntm/` contents are never left in a partially written state after crashes or interruptions.
+
 - [ ] T005 [P] Implement a `RuntimeConfig` model and loader in `src/nate_ntm/config/runtime_config.py` to resolve the project path, `.nate_ntm/` directory, and control API port from CLI options and environment.
 - [ ] T006 Implement `RuntimeState` and `AgentRuntimeState` data structures in `src/nate_ntm/runtime/state.py` reflecting the runtime and agent lifecycle states from `data-model.md` and `specs/001-swarm-runtime-orchestrator/spec.md`.
 - [ ] T007 [P] Implement `AgentEvent` and `AgentEventStream` abstractions in `src/nate_ntm/runtime/events.py` consistent with the `AgentEvent` type defined in `specs/001-swarm-runtime-orchestrator/contracts/runtime-api.md`.
 - [ ] T008 Implement a `RuntimeDaemon` entrypoint class in `src/nate_ntm/runtime/daemon.py` that wires together `RuntimeConfig`, `SwarmMetadata`, `RuntimeState`, and the scheduler, with start and graceful shutdown methods but stubbed integrations.
+- [ ] T037 Define and implement explicit `create` vs `resume` startup semantics in `src/nate_ntm/runtime/daemon.py` and `src/nate_ntm/cli.py`, including CLI flags (for example, `--mode create|resume` and optional `--force`/`--reuse`) and ensuring that when `.nate_ntm/` metadata already exists and `--mode create` is requested without an explicit override, startup fails safely with a clear error instead of silently reusing or overwriting metadata.
+
 - [ ] T009 Add or migrate to a Typer-based CLI in `src/nate_ntm/cli.py` that exposes `runtime` and `api` command groups (for example, `nate-ntm runtime start` and `nate-ntm api call`), while keeping the existing `cli()` entrypoint function and adding an `api call` subcommand that uses a JSON-RPC/WebSocket client helper in `src/nate_ntm/api/client.py` to invoke the runtime control API.
 - [ ] T010 [P] Update `pyproject.toml` `[project.scripts]` so that a `nate-ntm` console script is available and routed to `nate_ntm.cli:cli`, matching the commands used in `specs/001-swarm-runtime-orchestrator/quickstart.md`.
 - [ ] T011 [P] Add a WebSocket JSON-RPC server skeleton in `src/nate_ntm/api/server.py` that can accept localhost connections, parse JSON-RPC requests, and dispatch to placeholder handlers for all documented methods.
