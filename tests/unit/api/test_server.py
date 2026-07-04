@@ -8,9 +8,11 @@ implemented.
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime
 
 from nate_ntm.config.runtime_config import load_runtime_config
 from nate_ntm.runtime.daemon import RuntimeDaemon
+from nate_ntm.runtime.events import AgentEvent, AgentEventSource, AgentEventStream
 from nate_ntm.runtime.metadata_store import AgentMetadata, MetadataStore, SwarmMetadata
 from nate_ntm.runtime.state import AgentRuntimeState, AgentStatus, RuntimeState, RuntimeStatus
 from nate_ntm.api.server import RuntimeApiServer
@@ -116,3 +118,87 @@ def test_runtime_api_server_binds_daemon(tmp_path: Path) -> None:
     # Stubbed start/stop should be callable without side effects.
     server.start()
     server.stop()
+
+
+def test_runtime_api_server_get_agent_detail_returns_metadata_and_events(tmp_path: Path) -> None:
+    daemon = _make_daemon(tmp_path)
+
+    # Attach metadata and runtime state for a single agent, including an
+    # in-memory event stream with a couple of events.
+    base_swarm = daemon.swarm_metadata
+    agent_meta = AgentMetadata(
+        agent_id="agent-1",
+        display_name="Agent One",
+        agent_mail_identity="mail-1",
+        conversation_id="conv-1",
+    )
+    daemon.swarm_metadata = SwarmMetadata(
+        swarm_id=base_swarm.swarm_id,
+        project_path=base_swarm.project_path,
+        agent_mail_project_id=base_swarm.agent_mail_project_id,
+        created_at=base_swarm.created_at,
+        last_updated_at=base_swarm.last_updated_at,
+        config_version=base_swarm.config_version,
+        agents={"agent-1": agent_meta},
+        runtime_options=base_swarm.runtime_options,
+    )
+
+    stream = AgentEventStream(agent_id="agent-1", max_events=10)
+    e1 = AgentEvent(
+        event_id="e1",
+        timestamp=datetime(2026, 7, 3, 12, 0, 0),
+        agent_id="agent-1",
+        source=AgentEventSource.RUNTIME,
+        type="TestEvent1",
+        payload={"k": "v1"},
+    )
+    e2 = AgentEvent(
+        event_id="e2",
+        timestamp=datetime(2026, 7, 3, 12, 0, 1),
+        agent_id="agent-1",
+        source=AgentEventSource.ACP,
+        type="TestEvent2",
+        payload={"k": "v2"},
+    )
+    stream.append(e1)
+    stream.append(e2)
+
+    daemon.state.agents = {
+        "agent-1": AgentRuntimeState(
+            agent_id="agent-1",
+            status=AgentStatus.RUNNING,
+            last_error=None,
+            event_stream=stream,
+        )
+    }
+    daemon.state.status = RuntimeStatus.RUNNING
+
+    server = RuntimeApiServer(daemon=daemon)
+
+    detail = server.get_agent_detail(agent_id="agent-1", max_events=10)
+
+    agent = detail["agent"]
+    assert agent["agent_id"] == "agent-1"
+    assert agent["display_name"] == "Agent One"
+    assert agent["status"] == AgentStatus.RUNNING.value
+    assert agent["agent_mail_identity"] == "mail-1"
+    assert agent["conversation_id"] == "conv-1"
+    assert agent["last_error"] is None
+
+    events = detail["events"]
+    assert len(events) == 2
+    assert {e["event_id"] for e in events} == {"e1", "e2"}
+
+
+def test_runtime_api_server_get_agent_detail_unknown_agent_raises(tmp_path: Path) -> None:
+    daemon = _make_daemon(tmp_path)
+    server = RuntimeApiServer(daemon=daemon)
+
+    # No metadata or runtime state has been attached for this agent ID.
+    try:
+        _ = server.get_agent_detail(agent_id="missing-agent", max_events=10)
+    except KeyError as exc:
+        msg = str(exc)
+        assert "missing-agent" in msg
+    else:  # pragma: no cover - defensive
+        raise AssertionError("Expected KeyError for unknown agent_id")

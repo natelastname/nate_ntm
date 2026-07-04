@@ -19,10 +19,11 @@ particular scheduler or process model.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from datetime import datetime
+from typing import Any, Iterable, Mapping
 
 from ..config.runtime_config import RuntimeConfig
-from .events import AgentEventStream
+from .events import AgentEvent, AgentEventSource, AgentEventStream
 from .metadata_store import AgentMetadata, SwarmMetadata
 from .state import AgentRuntimeState, AgentStatus, RuntimeState
 
@@ -53,6 +54,46 @@ class AgentSupervisor:
     # Registration helpers
     # ------------------------------------------------------------------
 
+    def _get_or_create_event_stream(self, runtime_state: AgentRuntimeState) -> AgentEventStream:
+        """Return the event stream for ``runtime_state``, creating one if missing.
+
+        This keeps :class:`AgentSupervisor` robust when tests or future
+        scheduler logic seed :class:`AgentRuntimeState` entries without an
+        attached :class:`AgentEventStream`.
+        """
+
+        stream = runtime_state.event_stream
+        if stream is None:
+            stream = AgentEventStream(agent_id=runtime_state.agent_id)
+            runtime_state.event_stream = stream
+        return stream
+
+    def _append_runtime_event(
+        self,
+        runtime_state: AgentRuntimeState,
+        *,
+        event_type: str,
+        payload: Mapping[str, Any] | None = None,
+        source: AgentEventSource = AgentEventSource.RUNTIME,
+    ) -> None:
+        """Append a runtime-originated event to the agent's event stream.
+
+        Event identifiers are generated locally in a simple, per-agent
+        monotonic fashion suitable for in-memory inspection and tests.
+        """
+
+        stream = self._get_or_create_event_stream(runtime_state)
+        event_id = f"{runtime_state.agent_id}:{len(stream) + 1}"
+        event = AgentEvent(
+            event_id=event_id,
+            timestamp=datetime.utcnow(),
+            agent_id=runtime_state.agent_id,
+            source=source,
+            type=event_type,
+            payload=payload or {},
+        )
+        stream.append(event)
+
     def iter_configured_agents(self) -> Iterable[AgentMetadata]:
         """Iterate over :class:`AgentMetadata` records from the swarm.
 
@@ -81,8 +122,9 @@ class AgentSupervisor:
         runtime_state = AgentRuntimeState(
             agent_id=agent_id,
             status=AgentStatus.STARTING,
-            event_stream=AgentEventStream(agent_id=agent_id),
         )
+        # Ensure an event stream is attached for new agents.
+        self._get_or_create_event_stream(runtime_state)
         self.state.agents[agent_id] = runtime_state
         return runtime_state
 
@@ -110,6 +152,61 @@ class AgentSupervisor:
     # deliberately left as no-ops or minimal stubs for US1. They are
     # included to clarify ownership and to keep call sites stable as we
     # iterate on the scheduler and adapter implementations.
+
+    def mark_agent_failed(self, agent_id: str, *, error: str | None = None) -> AgentRuntimeState:
+        """Transition an agent to ``Failed`` and record an error summary.
+
+        This helper is a small, synchronous building block for the
+        scheduler and tests. In later phases it will be invoked from
+        subprocess and ACP error handlers.
+        """
+
+        runtime_state = self.state.agents.get(agent_id)
+        if runtime_state is None:
+            raise KeyError(f"Unknown agent_id: {agent_id!r}")
+
+        runtime_state.status = AgentStatus.FAILED
+        runtime_state.last_error = error
+
+        self._append_runtime_event(
+            runtime_state,
+            event_type="AgentFailed",
+            payload={"last_error": error} if error is not None else {},
+        )
+
+        return runtime_state
+
+    def restart_agent(self, agent_id: str) -> AgentRuntimeState:
+        """Apply a simple restart for a failed agent (dev-mode).
+
+        For US1 this does **not** spawn a real subprocess. Instead it
+        models a restart by:
+
+        * Re-initializing the agent's ``subprocess_handle`` placeholder.
+        * Clearing ``last_error``.
+        * Transitioning status from ``Failed`` back to ``Starting`` and then
+          to ``Idle`` in one step.
+
+        Restart limits and backoff policies from
+        :class:`AgentMetadata.restart_policy` are intentionally deferred.
+        """
+
+        runtime_state = self.state.agents.get(agent_id)
+        if runtime_state is None:
+            raise KeyError(f"Unknown agent_id: {agent_id!r}")
+
+        # Even if the agent is not currently in Failed state, we allow a
+        # restart request as a way to "refresh" its placeholder subprocess
+        # and mark it Idle.
+        runtime_state.status = AgentStatus.STARTING
+        runtime_state.last_error = None
+        runtime_state.subprocess_handle = object()
+        runtime_state.status = AgentStatus.IDLE
+
+        self._append_runtime_event(runtime_state, event_type="AgentRestarted")
+
+        return runtime_state
+
 
     def launch_all_agents(self) -> None:
         """Launch all configured agents (dev-mode implementation for US1).

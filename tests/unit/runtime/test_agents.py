@@ -180,6 +180,67 @@ def test_launch_all_agents_transitions_starting_to_idle_and_sets_subprocess(tmp_
 
 
 
+
+def test_mark_agent_failed_sets_status_and_last_error_and_emits_event(tmp_path) -> None:
+    project = tmp_path / "project"
+    config = _make_config(project)
+    state = _make_runtime_state(config)
+
+    metadata = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+    swarm = _make_swarm_metadata(config, agents={metadata.agent_id: metadata})
+
+    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+    supervisor.ensure_agents_registered()
+
+    runtime_state = state.agents["agent-1"]
+    assert runtime_state.status is AgentStatus.STARTING
+    assert runtime_state.last_error is None
+
+    supervisor.mark_agent_failed("agent-1", error="boom")
+
+    assert runtime_state.status is AgentStatus.FAILED
+    assert runtime_state.last_error == "boom"
+
+    # An event should have been appended to the agent's stream.
+    stream = runtime_state.event_stream
+    assert isinstance(stream, AgentEventStream)
+    events = list(stream)
+    assert len(events) == 1
+    event = events[0]
+    assert event.type == "AgentFailed"
+    assert event.payload.get("last_error") == "boom"
+
+
+
+def test_restart_agent_clears_error_and_marks_idle_and_emits_event(tmp_path) -> None:
+    project = tmp_path / "project"
+    config = _make_config(project)
+    state = _make_runtime_state(config)
+
+    metadata = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+    swarm = _make_swarm_metadata(config, agents={metadata.agent_id: metadata})
+
+    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+    supervisor.ensure_agents_registered()
+
+    runtime_state = state.agents["agent-1"]
+    runtime_state.status = AgentStatus.FAILED
+    runtime_state.last_error = "boom"
+
+    supervisor.restart_agent("agent-1")
+
+    assert runtime_state.status is AgentStatus.IDLE
+    assert runtime_state.last_error is None
+    assert runtime_state.subprocess_handle is not None
+
+    # AgentFailed + AgentRestarted events should both be recorded if the
+    # test marks the agent as failed first.
+    stream = runtime_state.event_stream
+    assert isinstance(stream, AgentEventStream)
+    events = list(stream)
+    assert any(e.type == "AgentRestarted" for e in events)
+
+
 def test_launch_all_agents_is_idempotent_and_preserves_non_starting_status(tmp_path) -> None:
     project = tmp_path / "project"
     config = _make_config(project)

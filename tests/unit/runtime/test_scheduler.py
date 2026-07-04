@@ -159,3 +159,59 @@ def test_scheduler_respects_preseeded_runtime_state(tmp_path) -> None:
     assert "a2" in state.agents
     assert state.agents["a2"].status is AgentStatus.IDLE
     assert state.agents["a2"].subprocess_handle is not None
+
+
+def test_scheduler_mark_agent_failed_delegates_and_updates_state(tmp_path) -> None:
+    project = tmp_path / "project"
+    config = _make_config(project)
+    state = _make_runtime_state(config)
+
+    a1 = AgentMetadata(agent_id="a1", display_name="Agent One")
+    swarm = _make_swarm_metadata(config, agents={"a1": a1})
+
+    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+    scheduler = RuntimeScheduler(
+        config=config,
+        state=state,
+        swarm_metadata=swarm,
+        agent_supervisor=supervisor,
+    )
+
+    # Seed runtime state as if the scheduler had already started.
+    supervisor.ensure_agents_registered()
+    runtime_state = state.agents["a1"]
+    assert runtime_state.status is AgentStatus.STARTING
+
+    scheduler.mark_agent_failed("a1", error="boom")
+
+    assert runtime_state.status is AgentStatus.FAILED
+    assert runtime_state.last_error == "boom"
+
+
+def test_scheduler_restart_agent_delegates_and_marks_idle(tmp_path) -> None:
+    project = tmp_path / "project"
+    config = _make_config(project)
+    state = _make_runtime_state(config)
+
+    a1 = AgentMetadata(agent_id="a1", display_name="Agent One")
+    swarm = _make_swarm_metadata(config, agents={"a1": a1})
+
+    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+    scheduler = RuntimeScheduler(
+        config=config,
+        state=state,
+        swarm_metadata=swarm,
+        agent_supervisor=supervisor,
+    )
+
+    supervisor.ensure_agents_registered()
+    runtime_state = state.agents["a1"]
+    runtime_state.status = AgentStatus.FAILED
+    runtime_state.last_error = "boom"
+
+    scheduler.restart_agent("a1")
+
+    assert runtime_state.status is AgentStatus.IDLE
+    assert runtime_state.last_error is None
+    assert runtime_state.subprocess_handle is not None
+

@@ -78,3 +78,28 @@ class RuntimeScheduler:
         """
 
         self.running = False
+
+    # ------------------------------------------------------------------
+    # Simple lifecycle helpers
+    # ------------------------------------------------------------------
+
+    def mark_agent_failed(self, agent_id: str, *, error: str | None = None) -> None:
+        """Record an agent failure via :class:`AgentSupervisor`.
+
+        In future iterations this will be called from subprocess/ACP event
+        handlers and may consult per-agent restart policies before deciding
+        whether to restart the agent.
+        """
+
+        self.agent_supervisor.mark_agent_failed(agent_id, error=error)
+
+    def restart_agent(self, agent_id: str) -> None:
+        """Request a simple dev-mode restart for an agent.
+
+        This delegates to :meth:`AgentSupervisor.restart_agent`, which
+        currently models restarts by refreshing the placeholder subprocess
+        handle and transitioning the agent back to ``Idle``.
+        """
+
+        self.agent_supervisor.restart_agent(agent_id)
+

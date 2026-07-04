@@ -85,3 +85,13 @@ class RuntimeApiServer:
         """
 
         return self.daemon.get_swarm_overview()
+
+    def get_agent_detail(self, agent_id: str, max_events: int = 100) -> Dict[str, Any]:
+        """Return detailed information for a single agent.
+
+        This corresponds to the ``agent.get_detail`` method in
+        ``contracts/runtime-api.md`` and delegates to the
+        :class:`RuntimeDaemon` for its implementation.
+        """
+
+        return self.daemon.get_agent_detail(agent_id=agent_id, max_events=max_events)

@@ -417,3 +417,58 @@ class RuntimeDaemon:
             "agents": agents,
         }
 
+    def get_agent_detail(self, agent_id: str, max_events: int = 100) -> dict[str, object]:
+        """Return a JSON-serializable snapshot for ``agent.get_detail``.
+
+        The result shape mirrors the contract in
+        ``specs/001-swarm-runtime-orchestrator/contracts/runtime-api.md``:
+
+        * ``agent``: joined view of persisted metadata and live runtime state.
+        * ``events``: recent :class:`AgentEvent` records from the agent's
+          in-memory :class:`~nate_ntm.runtime.events.AgentEventStream`.
+        """
+
+        metadata = self.swarm_metadata.agents.get(agent_id)
+        runtime_state = self.state.agents.get(agent_id)
+
+        if metadata is None and runtime_state is None:
+            # Unknown agent identifier. At the JSON-RPC layer this will be
+            # surfaced as a structured error; for the in-process API we use
+            # ``KeyError`` to mirror other lookup helpers.
+            raise KeyError(f"Unknown agent_id: {agent_id!r}")
+
+        display_name = metadata.display_name if metadata is not None else agent_id
+
+        if runtime_state is not None:
+            status_value = runtime_state.status.value
+            last_error = runtime_state.last_error
+            stream = runtime_state.event_stream
+        else:
+            # Fall back to the last persisted status when no live runtime
+            # state is available.
+            if metadata is not None and metadata.last_known_status:
+                status_value = metadata.last_known_status
+            else:
+                status_value = AgentStatus.STARTING.value
+            last_error = None
+            stream = None
+
+        agent_payload: dict[str, object] = {
+            "agent_id": agent_id,
+            "display_name": display_name,
+            "status": status_value,
+            "agent_mail_identity": metadata.agent_mail_identity if metadata else "",
+            "conversation_id": metadata.conversation_id if metadata else "",
+            "last_error": last_error,
+        }
+
+        events_payload: list[dict[str, object]] = []
+        if stream is not None:
+            events = stream.get_events(limit=max_events)
+            events_payload = [event.to_dict() for event in events]
+
+        return {
+            "agent": agent_payload,
+            "events": events_payload,
+        }
+
