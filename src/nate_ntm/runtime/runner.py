@@ -24,6 +24,7 @@ from ..api.jsonrpc_ws import JsonRpcWebSocketServer
 from ..api.server import RuntimeApiServer
 from ..config.runtime_config import RuntimeConfig
 from .daemon import RuntimeDaemon, StartupMode
+from .events import AgentEvent
 
 __all__ = [
     "RuntimeControlContext",
@@ -99,6 +100,34 @@ def create_runtime_control_context(
     ws_port = port if port is not None else config.control_api_port
 
     ws_server = JsonRpcWebSocketServer(api_server=api_server, host=ws_host, port=ws_port)
+
+    # Wire the runtime's AgentEvent pipeline into the WebSocket control API.
+    #
+    # The AgentSupervisor exposes an ``on_agent_event`` callback that is
+    # invoked whenever a new :class:`AgentEvent` is appended to an agent's
+    # in-memory event stream. Here we install a small bridge that forwards
+    # those events to :meth:`JsonRpcWebSocketServer.publish_event`, which in
+    # turn emits ``events.notify`` JSON-RPC notifications to subscribed
+    # clients.
+    scheduler = daemon.scheduler
+    if scheduler is not None:
+        supervisor = getattr(scheduler, "agent_supervisor", None)
+
+        if supervisor is not None:
+            def _on_agent_event(event: AgentEvent) -> None:
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    # If no event loop is running (for example, in pure
+                    # in-process unit tests), we still record events in the
+                    # per-agent streams but skip streaming notifications.
+                    return
+
+                # Schedule asynchronous publication of the event without
+                # blocking the caller.
+                loop.create_task(ws_server.publish_event(event))
+
+            supervisor.on_agent_event = _on_agent_event
 
     return RuntimeControlContext(
         config=config,

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from ..config.runtime_config import RuntimeConfig
 from .events import AgentEvent, AgentEventSource, AgentEventStream
@@ -49,6 +49,13 @@ class AgentSupervisor:
     config: RuntimeConfig
     state: RuntimeState
     swarm_metadata: SwarmMetadata
+
+    # Optional callback invoked whenever a new AgentEvent is appended to an
+    # agent's in-memory event stream. This allows higher-level components
+    # (for example, the WebSocket control API) to stream events to
+    # subscribed clients without coupling this module to any particular
+    # transport.
+    on_agent_event: Callable[[AgentEvent], None] | None = None
 
     # ------------------------------------------------------------------
     # Registration helpers
@@ -93,6 +100,13 @@ class AgentSupervisor:
             payload=payload or {},
         )
         stream.append(event)
+
+        # Forward the event to any configured listener so that higher-level
+        # components (for example, the WebSocket control API) can stream it
+        # to subscribed clients without coupling this supervisor to a
+        # particular transport.
+        if self.on_agent_event is not None:
+            self.on_agent_event(event)
 
     def iter_configured_agents(self) -> Iterable[AgentMetadata]:
         """Iterate over :class:`AgentMetadata` records from the swarm.
