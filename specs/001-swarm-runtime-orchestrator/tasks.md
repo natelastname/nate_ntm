@@ -118,11 +118,11 @@ complete for this orchestrator MVP.
 
 ### Implementation for User Story 3
 
-- [ ] T027 [US3] Wire Agent Event Stream updates into `src/nate_ntm/runtime/scheduler.py` so that ACP, Agent Mail, and runtime events for each agent are appended to `AgentEventStream` buffers with bounded size, as defined in `specs/001-swarm-runtime-orchestrator/data-model.md`.
-- [ ] T028 [US3] Implement the `agent.get_detail` handler in `src/nate_ntm/api/server.py` and its runtime-side query in `src/nate_ntm/runtime/daemon.py` to return agent metadata and recent `AgentEvent` records per `specs/001-swarm-runtime-orchestrator/contracts/runtime-api.md`.
-- [ ] T029 [US3] Implement `events.subscribe`, the server-side subscription registry, and `events.notify` behavior in `src/nate_ntm/api/server.py` using JSON-RPC-style notifications over the localhost WebSocket as defined in `specs/001-swarm-runtime-orchestrator/contracts/runtime-api.md`.
-- [ ] T030 [US3] Extend the runtime event pipeline in `src/nate_ntm/runtime/daemon.py` and `src/nate_ntm/runtime/events.py` to publish new `AgentEvent` and runtime events to active subscriptions for the correct agents.
-- [ ] T031 [P] [US3] Add integration tests for agent inspection and event streaming latency in `tests/integration/quickstart/test_agent_inspection_us3.py`, validating SC-004 and the US3 acceptance scenarios.
+- [X] T027 [US3] Wire Agent Event Stream updates into `src/nate_ntm/runtime/scheduler.py` so that runtime- and adapter-originated events for each agent are appended to `AgentEventStream` buffers with bounded size, as defined in `specs/001-swarm-runtime-orchestrator/data-model.md`.
+- [X] T028 [US3] Implement the `agent.get_detail` handler in `src/nate_ntm/api/server.py` and its runtime-side query in `src/nate_ntm/runtime/daemon.py` to return agent metadata and recent `AgentEvent` records per `specs/001-swarm-runtime-orchestrator/contracts/runtime-api.md`.
+- [X] T029 [US3] Implement `events.subscribe`, the server-side subscription registry, and `events.notify` behavior in `src/nate_ntm/api/server.py` and `src/nate_ntm/api/jsonrpc_ws.py` using JSON-RPC-style notifications over the localhost WebSocket as defined in `specs/001-swarm-runtime-orchestrator/contracts/runtime-api.md`.
+- [X] T030 [US3] Extend the runtime event pipeline in `src/nate_ntm/runtime/daemon.py`, `src/nate_ntm/runtime/events.py`, and `src/nate_ntm/runtime/runner.py` to publish new `AgentEvent` instances to active subscriptions for the correct agents.
+- [X] T031 [P] [US3] Add integration tests for agent inspection and event streaming in `tests/integration/quickstart/test_runtime_ws_events_us3.py`, validating SC-004 at a basic level and the US3 acceptance scenarios.
 
 ---
 
