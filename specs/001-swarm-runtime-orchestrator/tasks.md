@@ -100,11 +100,11 @@ complete for this orchestrator MVP.
 
 ### Implementation for User Story 2
 
-- [ ] T022 [US2] Implement the swarm resume path in `src/nate_ntm/runtime/daemon.py` to support `mode="resume"`, loading `SwarmMetadata` and `AgentMetadata` from `.nate_ntm/` and validating invariants from `specs/001-swarm-runtime-orchestrator/data-model.md`.
-- [ ] T023 [US2] Implement runtime logic in `src/nate_ntm/runtime/daemon.py` and `src/nate_ntm/runtime/agent_mail_client.py` / `src/nate_ntm/runtime/acp_client.py` to rebind Agent Mail identities and ACP conversations for all agents on resume, reusing `agent_mail_identity` and `conversation_id` in accordance with FR-009.
-- [ ] T024 [US2] Extend the scheduler in `src/nate_ntm/runtime/scheduler.py` to poll Agent Mail for unread messages at startup and enqueue events to schedule eligible agents on resume, satisfying FR-005 and US2 acceptance scenario 2.
-- [ ] T025 [P] [US2] Add integration tests for shutdown and resume behavior in `tests/integration/quickstart/test_resume_swarm_us2.py`, validating SC-002 and ensuring `.nate_ntm/` metadata is reused correctly.
-- [ ] T026 [P] [US2] Add tests for corrupted or incomplete metadata in `tests/integration/runtime_mail/test_resume_error_paths_us2.py` to ensure the runtime fails fast or degrades gracefully when `.nate_ntm/` contents are invalid (edge case section of `specs/001-swarm-runtime-orchestrator/spec.md`).
+- [X] T022 [US2] Implement the swarm resume path in `src/nate_ntm/runtime/daemon.py` to support `mode="resume"`, loading `SwarmMetadata` and `AgentMetadata` from `.nate_ntm/` and validating invariants from `specs/001-swarm-runtime-orchestrator/data-model.md`.
+- [X] T023 [US2] Implement runtime logic in `src/nate_ntm/runtime/daemon.py` and `src/nate_ntm/runtime/agent_mail_client.py` / `src/nate_ntm/runtime/acp_client.py` to rebind Agent Mail identities and ACP conversations for all agents on resume, reusing `agent_mail_identity` and `conversation_id` in accordance with FR-009.
+- [X] T024 [US2] Extend the scheduler in `src/nate_ntm/runtime/scheduler.py` to poll Agent Mail for unread messages at startup and enqueue events to schedule eligible agents on resume, satisfying FR-005 and US2 acceptance scenario 2.
+- [X] T025 [P] [US2] Add integration tests for shutdown and resume behavior in `tests/integration/quickstart/test_resume_swarm_us2.py`, validating SC-002 and ensuring `.nate_ntm/` metadata is reused correctly.
+- [X] T026 [P] [US2] Add tests for corrupted or incomplete metadata in `tests/integration/runtime_mail/test_resume_error_paths_us2.py` to ensure the runtime fails fast or degrades gracefully when `.nate_ntm/` contents are invalid (edge case section of `specs/001-swarm-runtime-orchestrator/spec.md`).
 
 ---
 

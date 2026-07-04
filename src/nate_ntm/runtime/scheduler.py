@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..config.runtime_config import RuntimeConfig
+from .agent_mail_client import BaseAgentMailClient
 from .agents import AgentSupervisor
 from .metadata_store import SwarmMetadata
 from .state import RuntimeState
@@ -42,6 +43,13 @@ class RuntimeScheduler:
     swarm_metadata: SwarmMetadata
     agent_supervisor: AgentSupervisor
 
+    # Optional Agent Mail adapter used to poll for unread messages at
+    # startup. For US2 this is used in dev-mode to synthesize
+    # "MailReceived" events for agents that have unread mail so that the
+    # scheduler and event pipeline can treat them as eligible for
+    # scheduling on resume.
+    agent_mail_client: BaseAgentMailClient | None = None
+
     running: bool = False
 
     def start(self) -> None:
@@ -55,9 +63,12 @@ class RuntimeScheduler:
         * Newly registered agents are transitioned from ``Starting`` to
           ``Idle`` with a lightweight placeholder subprocess handle.
 
-        More sophisticated behavior (event loop, timers, ACP/Agent Mail
-        integration) will be layered on in future work without changing
-        this high-level entry point.
+        For US2, when an :class:`BaseAgentMailClient` is configured, the
+        scheduler also performs a one-time poll for unread Agent Mail at
+        startup and enqueues runtime events for agents that currently
+        have unread messages. This provides a simple, testable hook for
+        resume-time scheduling behavior without requiring a full event
+        loop yet.
         """
 
         if self.running:
@@ -66,6 +77,24 @@ class RuntimeScheduler:
         # Ensure that runtime state reflects configured agents and that
         # newly added ones are treated as "launched" in dev-mode.
         self.agent_supervisor.launch_all_agents()
+
+        # After agents are registered/launched, consult Agent Mail (when
+        # available) for unread messages and enqueue corresponding
+        # runtime events. This allows higher layers (and future scheduler
+        # logic) to treat those agents as having work available on
+        # resume.
+        if self.agent_mail_client is not None and self.swarm_metadata.agents:
+            agent_ids = list(self.swarm_metadata.agents.keys())
+            flags = self.agent_mail_client.get_unread_mail_flags(agent_ids)
+            for agent_id, has_unread in flags.items():
+                if not has_unread:
+                    continue
+                # Only enqueue events for agents that have runtime
+                # state; in a well-formed startup flow launch_all_agents
+                # above guarantees this.
+                if agent_id not in self.state.agents:
+                    continue
+                self.agent_supervisor.record_unread_mail(agent_id)
 
         self.running = True
 

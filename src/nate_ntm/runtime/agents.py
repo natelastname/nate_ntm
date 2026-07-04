@@ -222,6 +222,31 @@ class AgentSupervisor:
         return runtime_state
 
 
+    def record_unread_mail(self, agent_id: str, *, count: int | None = None) -> None:
+        """Record a dev-mode Agent Mail notification for ``agent_id``.
+
+        This helper is used by the scheduler in US2 to enqueue a
+        lightweight ``MailReceived`` event for agents that have unread
+        mail at startup, based on a poll of the Agent Mail adapter.
+        ``count`` is currently informational and may be omitted.
+        """
+
+        runtime_state = self.state.agents.get(agent_id)
+        if runtime_state is None:
+            raise KeyError(f"Unknown agent_id: {agent_id!r}")
+
+        payload: Mapping[str, Any] = {}
+        if count is not None:
+            payload["unread_count"] = count
+
+        self._append_runtime_event(
+            runtime_state,
+            event_type="MailReceived",
+            payload=payload,
+            source=AgentEventSource.AGENT_MAIL,
+        )
+
+
     def launch_all_agents(self) -> None:
         """Launch all configured agents (dev-mode implementation for US1).
 

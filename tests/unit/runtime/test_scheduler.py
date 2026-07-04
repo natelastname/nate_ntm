@@ -215,3 +215,103 @@ def test_scheduler_restart_agent_delegates_and_marks_idle(tmp_path) -> None:
     assert runtime_state.last_error is None
     assert runtime_state.subprocess_handle is not None
 
+
+
+def test_scheduler_enqueues_mail_received_events_from_unread_flags(tmp_path) -> None:
+    """Scheduler polls Agent Mail once at startup and enqueues events.
+
+    This exercises the US2 behavior added in T024: when a
+    :class:`BaseAgentMailClient` is provided, ``RuntimeScheduler.start``
+    consults ``get_unread_mail_flags`` and records a ``MailReceived``
+    event for each agent that currently has unread mail.
+    """
+
+    from nate_ntm.runtime.agent_mail_client import FakeAgentMailClient
+    from nate_ntm.runtime.events import AgentEventSource
+
+    project = tmp_path / "project"
+    config = _make_config(project)
+    state = _make_runtime_state(config)
+
+    a1 = AgentMetadata(agent_id="a1", display_name="Agent One")
+    a2 = AgentMetadata(agent_id="a2", display_name="Agent Two")
+    swarm = _make_swarm_metadata(config, agents={"a1": a1, "a2": a2})
+
+    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+
+    # Seed the fake Agent Mail client with an unread message for ``a1``
+    # only. ``a2`` remains without unread mail.
+    mail_client = FakeAgentMailClient(config=config)
+    mail_client.ensure_project()
+    mail_client.set_unread_count_for_test("a1", 3)
+
+    scheduler = RuntimeScheduler(
+        config=config,
+        state=state,
+        swarm_metadata=swarm,
+        agent_supervisor=supervisor,
+        agent_mail_client=mail_client,
+    )
+
+    scheduler.start()
+
+    # Both agents should have runtime state entries.
+    assert set(state.agents.keys()) == {"a1", "a2"}
+
+    # ``a1`` should have a MailReceived event from Agent Mail.
+    a1_state = state.agents["a1"]
+    assert a1_state.event_stream is not None
+    a1_events = list(a1_state.event_stream)
+    assert any(
+        e.source is AgentEventSource.AGENT_MAIL and e.type == "MailReceived" for e in a1_events
+    )
+
+    # ``a2`` should have no MailReceived events.
+    a2_state = state.agents["a2"]
+    assert a2_state.event_stream is not None
+    a2_events = list(a2_state.event_stream)
+    assert all(e.type != "MailReceived" for e in a2_events)
+
+
+def test_scheduler_unread_mail_poll_is_idempotent(tmp_path) -> None:
+    """Second call to start() does not duplicate MailReceived events.
+
+    ``RuntimeScheduler.start`` short-circuits when ``running`` is True,
+    so the unread-mail poll and event enqueue path must run exactly once
+    per scheduler instance.
+    """
+
+    from nate_ntm.runtime.agent_mail_client import FakeAgentMailClient
+
+    project = tmp_path / "project"
+    config = _make_config(project)
+    state = _make_runtime_state(config)
+
+    a1 = AgentMetadata(agent_id="a1", display_name="Agent One")
+    swarm = _make_swarm_metadata(config, agents={"a1": a1})
+
+    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+
+    mail_client = FakeAgentMailClient(config=config)
+    mail_client.ensure_project()
+    mail_client.set_unread_count_for_test("a1", 1)
+
+    scheduler = RuntimeScheduler(
+        config=config,
+        state=state,
+        swarm_metadata=swarm,
+        agent_supervisor=supervisor,
+        agent_mail_client=mail_client,
+    )
+
+    scheduler.start()
+    a1_state = state.agents["a1"]
+    assert a1_state.event_stream is not None
+    first_events = list(a1_state.event_stream)
+
+    # Second call should be a no-op with respect to events.
+    scheduler.start()
+    second_events = list(a1_state.event_stream)
+
+    assert second_events == first_events
+
