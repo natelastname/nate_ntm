@@ -73,6 +73,53 @@ def _make_resume_config_and_metadata(tmp_path: Path) -> RuntimeConfig:
     return config
 
 
+class _JsonRpcWsTestClient:
+    """Minimal long-lived JSON-RPC client for WebSocket tests.
+
+    This helper is intentionally small and tailored for integration tests:
+
+    * It keeps a single WebSocket connection open.
+    * It can issue multiple JSON-RPC requests over that connection.
+    * It can receive out-of-band notifications such as ``events.notify``.
+    """
+
+    def __init__(self, websocket: websockets.WebSocketClientProtocol) -> None:  # type: ignore[name-defined]
+        self._ws = websocket
+        self._next_id = 1
+
+    async def call(self, method: str, params: dict[str, object] | None = None) -> dict[str, object]:
+        request_id = self._next_id
+        self._next_id += 1
+
+        request = {
+            "jsonrpc": JSONRPC_VERSION,
+            "method": method,
+            "params": params or {},
+            "id": request_id,
+        }
+
+        await self._ws.send(json.dumps(request))
+        raw = await self._ws.recv()
+        response = json.loads(raw)
+
+        assert response["jsonrpc"] == JSONRPC_VERSION
+        assert response["id"] == request_id
+        return response
+
+    async def call_for_result(self, method: str, params: dict[str, object] | None = None) -> dict[str, object]:
+        response = await self.call(method, params)
+        assert "result" in response
+        return response["result"]
+
+    async def recv_notification(self, *, timeout: float = 5.0) -> dict[str, object]:
+        raw = await asyncio.wait_for(self._ws.recv(), timeout=timeout)
+        message = json.loads(raw)
+        assert message["jsonrpc"] == JSONRPC_VERSION
+        assert "method" in message
+        return message
+
+
+
 def test_runtime_ws_events_us3_agent_failure_publishes_events_notify(tmp_path: Path) -> None:
     """US3: runtime-originated agent failure events reach WebSocket clients.
 
@@ -115,22 +162,15 @@ def test_runtime_ws_events_us3_agent_failure_publishes_events_notify(tmp_path: P
 
         uri = f"ws://127.0.0.1:{port}"
 
-        async with websockets.connect(uri) as client:
+        async with websockets.connect(uri) as websocket:
+            client = _JsonRpcWsTestClient(websocket)
+
             # 1. Subscribe to events for the single configured agent.
-            subscribe_request = {
-                "jsonrpc": JSONRPC_VERSION,
-                "method": "events.subscribe",
-                "params": {"agent_ids": ["nav-1"], "include_runtime": True},
-                "id": 1,
-            }
-            await client.send(json.dumps(subscribe_request))
-
-            raw_sub = await client.recv()
-            sub_response = json.loads(raw_sub)
-
-            assert sub_response["jsonrpc"] == JSONRPC_VERSION
-            assert sub_response["id"] == 1
-            sub_id = sub_response["result"]["subscription_id"]
+            sub_result = await client.call_for_result(
+                "events.subscribe",
+                {"agent_ids": ["nav-1"], "include_runtime": True},
+            )
+            sub_id = sub_result["subscription_id"]
             assert isinstance(sub_id, str)
 
             # 2. Wait until the daemon has fully started and the scheduler has
@@ -157,38 +197,43 @@ def test_runtime_ws_events_us3_agent_failure_publishes_events_notify(tmp_path: P
             # 4. The WebSocket client should receive an ``events.notify``
             # message for the subscribed agent. Use a small timeout to avoid
             # hanging the test if the wiring is broken.
-            raw_notify = await asyncio.wait_for(client.recv(), timeout=5.0)
-            notify = json.loads(raw_notify)
+            notify = await client.recv_notification(timeout=5.0)
 
-            assert notify["jsonrpc"] == JSONRPC_VERSION
             assert notify["method"] == "events.notify"
             params = notify["params"]
             assert params["subscription_id"] == sub_id
 
-            event = params["event"]
-            assert event["agent_id"] == "nav-1"
-            assert event["type"] == "AgentFailed"
+            notified_event = params["event"]
+            assert notified_event["agent_id"] == "nav-1"
+            assert notified_event["type"] == "AgentFailed"
             # Basic sanity check on the event identifier format produced by
             # ``AgentSupervisor._append_runtime_event``.
-            assert event["event_id"].startswith("nav-1:")
+            assert notified_event["event_id"].startswith("nav-1:")
 
-            # 5. Request a graceful shutdown so the serve loop can exit
+            # 5. Fetch the agent detail snapshot and verify that the
+            # in-memory ``AgentEventStream`` replays the same event.
+            detail = await client.call_for_result(
+                "agent.get_detail",
+                {"agent_id": "nav-1", "max_events": 10},
+            )
+
+            events = detail["events"]
+            assert isinstance(events, list)
+            assert len(events) == 1
+            detail_event = events[0]
+            assert detail_event["event_id"] == notified_event["event_id"]
+            assert detail_event["agent_id"] == notified_event["agent_id"]
+            assert detail_event["type"] == notified_event["type"]
+
+            # 6. Request a graceful shutdown so the serve loop can exit
             # cleanly before the test completes.
-            shutdown_request = {
-                "jsonrpc": JSONRPC_VERSION,
-                "method": "runtime.shutdown",
-                "params": {"timeout_seconds": 5},
-                "id": 2,
-            }
-            await client.send(json.dumps(shutdown_request))
-            raw_shutdown = await client.recv()
-            shutdown_response = json.loads(raw_shutdown)
+            shutdown_result = await client.call_for_result(
+                "runtime.shutdown",
+                {"timeout_seconds": 5},
+            )
 
-            assert shutdown_response["jsonrpc"] == JSONRPC_VERSION
-            assert shutdown_response["id"] == 2
-            result = shutdown_response["result"]
-            assert result["accepted"] is True
-            assert result["status"] == RuntimeStatus.SHUTTING_DOWN.value
+            assert shutdown_result["accepted"] is True
+            assert shutdown_result["status"] == RuntimeStatus.SHUTTING_DOWN.value
 
         # Once shutdown has been requested, the serve loop should exit.
         await asyncio.wait_for(serve_task, timeout=5.0)
