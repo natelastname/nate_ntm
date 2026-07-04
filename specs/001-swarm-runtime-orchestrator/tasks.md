@@ -125,19 +125,7 @@ complete for this orchestrator MVP.
 - [X] T031 [P] [US3] Add integration tests for agent inspection and event streaming in `tests/integration/quickstart/test_runtime_ws_events_us3.py`, validating SC-004 at a basic level and the US3 acceptance scenarios.
 
 ---
-
-## Phase 6: Polish & Cross-Cutting Concerns
-
-**Purpose**: Refinements that affect multiple user stories and overall operability.
-
-- [ ] T032 [P] Align `specs/001-swarm-runtime-orchestrator/checklists/requirements.md` with the finalized spec, plan, runtime API contract, and this tasks.md so that each FR and SC has clear checklist coverage.
-- [ ] T033 [P] Update `specs/001-swarm-runtime-orchestrator/quickstart.md` and `README.md` to reflect the implemented CLI commands, runtime API behavior, and any deviations discovered during implementation.
-- [ ] T034 Implement structured logging and error-reporting conventions in `src/nate_ntm/runtime/daemon.py` and `src/nate_ntm/runtime/scheduler.py` (including log levels, error summaries, and correlation IDs where appropriate).
-- [ ] T035 [P] Run the full quickstart validation scenarios and add any new follow-up items or clarifications to `specs/001-swarm-runtime-orchestrator/research.md` and `specs/001-swarm-runtime-orchestrator/plan_feedback.md`.
-- [ ] T036 [P] Update `AGENTS_MK2.md` and, if appropriate, `AGENTS.md` to reference the nate_ntm Swarm Runtime Orchestrator feature, its plan (`specs/001-swarm-runtime-orchestrator/plan.md`), and this tasks file for future agent workflows.
-
-
-## Future Features (Post-MVP)
+## Phase 6: Production Integration
 
 - [ ] T100 [P] Support configurable runtime adapter implementations for ACP and Agent Mail,
   including configuration fields in `src/nate_ntm/config/runtime_config.py` and CLI wiring
@@ -154,6 +142,18 @@ complete for this orchestrator MVP.
   satisfies the `BaseAcpClient` interface using real control-protocol APIs, and add
   focused integration tests under `tests/integration/runtime_acp/` that are gated or
   marked to avoid running in offline CI environments.
+
+
+
+## Phase 7: Polish & Documentation
+
+**Purpose**: Refinements that affect multiple user stories and overall operability.
+
+- [ ] T032 [P] Align `specs/001-swarm-runtime-orchestrator/checklists/requirements.md` with the finalized spec, plan, runtime API contract, and this tasks.md so that each FR and SC has clear checklist coverage.
+- [ ] T033 [P] Update `specs/001-swarm-runtime-orchestrator/quickstart.md` and `README.md` to reflect the implemented CLI commands, runtime API behavior, and any deviations discovered during implementation.
+- [ ] T034 Implement structured logging and error-reporting conventions in `src/nate_ntm/runtime/daemon.py` and `src/nate_ntm/runtime/scheduler.py` (including log levels, error summaries, and correlation IDs where appropriate).
+- [ ] T035 [P] Run the full quickstart validation scenarios and add any new follow-up items or clarifications to `specs/001-swarm-runtime-orchestrator/research.md` and `specs/001-swarm-runtime-orchestrator/plan_feedback.md`.
+- [ ] T036 [P] Update `AGENTS_MK2.md` and, if appropriate, `AGENTS.md` to reference the nate_ntm Swarm Runtime Orchestrator feature, its plan (`specs/001-swarm-runtime-orchestrator/plan.md`), and this tasks file for future agent workflows.
 
 
 ---
