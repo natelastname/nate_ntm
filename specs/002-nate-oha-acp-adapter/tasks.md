@@ -182,13 +182,13 @@ For this feature, no new project scaffolding or package layout changes are requi
 
 ### Implementation for User Story 3
 
-- [ ] T230 [US3] Wire `BaseAcpClient.on_event` into `AgentSupervisor` and the WebSocket pipeline.
+- [x] T230 [US3] Wire `BaseAcpClient.on_event` into `AgentSupervisor` and the WebSocket pipeline.
   - In `RuntimeDaemon.create` and `RuntimeDaemon.resume` (`src/nate_ntm/runtime/daemon.py`), after constructing the `RuntimeScheduler` and its `AgentSupervisor`, wire the ACP adapter’s event callback so that:
     - `BaseAcpClient.on_event` (for both `FakeAcpClient` and `NateOhaAcpClient`) forwards `AgentEvent` instances into `AgentSupervisor`’s per-agent `AgentEventStream`.
     - The existing bridge in `src/nate_ntm/runtime/runner.py` (which assigns `supervisor.on_agent_event` to publish events over the WebSocket JSON-RPC server) continues to receive these events, so that `events.subscribe` / `events.notify` work for nate_OHA-backed agents without additional transport-specific logic in the adapters.
   - Ensure this wiring is in place by the time T212–T214 are implemented so that process-started and readiness events from `NateOhaAcpClient` are not silently dropped.
 
-- [ ] T231 [US3] Map nate_OHA process and ACP events into `AgentEvent`.
+- [x] T231 [US3] Map nate_OHA process and ACP events into `AgentEvent`.
   - In `NateOhaAcpClient` (`src/nate_ntm/runtime/acp_client.py`), implement event mapping logic that converts:
     - Process-level lifecycle events (for example, `nate_oha_process_started`, `nate_oha_process_ready`, `nate_oha_process_start_failed`, `nate_oha_process_exited`, `nate_oha_process_crashed`).
     - ACP/agent-level events from nate_OHA’s ACP event stream (turn completions, tool calls, relevant errors).
@@ -200,7 +200,7 @@ For this feature, no new project scaffolding or package layout changes are requi
     - Agent inspection via `agent.get_detail` shows nate_OHA-related status and recent events.
     - Live event subscriptions via `events.subscribe` / `events.notify` receive nate_OHA process and ACP events with acceptable latency (SC-003).
 
-- [ ] T233 [P] [US3] Add unit tests for event callback wiring.
+- [x] T233 [P] [US3] Add unit tests for event callback wiring.
   - Add unit tests in `tests/unit/runtime/test_events.py` and/or `tests/unit/runtime/test_acp_client.py` to verify that:
     - When `BaseAcpClient.on_event` is set, both `FakeAcpClient` and `NateOhaAcpClient` invoke the callback with well-formed `AgentEvent` instances.
     - `RuntimeControlContext.create_runtime_control_context` in `src/nate_ntm/runtime/runner.py` continues to bridge `AgentSupervisor.on_agent_event` into `JsonRpcWebSocketServer.publish_event`, ensuring end-to-end propagation from adapters to WebSocket clients.

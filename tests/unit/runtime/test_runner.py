@@ -19,7 +19,7 @@ from pathlib import Path
 from nate_ntm.api.jsonrpc_ws import JsonRpcWebSocketServer
 from nate_ntm.config.runtime_config import load_runtime_config
 from nate_ntm.runtime.daemon import StartupMode
-from nate_ntm.runtime.events import AgentEvent
+from nate_ntm.runtime.events import AgentEvent, AgentEventSource
 from nate_ntm.runtime.runner import create_runtime_control_context
 from nate_ntm.runtime.state import AgentRuntimeState, AgentStatus
 
@@ -113,3 +113,87 @@ def test_create_runtime_control_context_wires_agent_events_to_ws_server(tmp_path
             JsonRpcWebSocketServer.publish_event = original_publish  # type: ignore[assignment]
 
     asyncio.run(main())
+
+
+
+def test_create_runtime_control_context_bridges_acp_events_to_ws_server(tmp_path: Path) -> None:
+    """ACP adapter events are bridged to JsonRpcWebSocketServer.publish_event.
+
+    This exercises the wiring from BaseAcpClient.on_event ->
+    AgentSupervisor.append_agent_event -> AgentSupervisor.on_agent_event ->
+    JsonRpcWebSocketServer.publish_event using the dev-mode FakeAcpClient.
+    """
+
+    async def main() -> None:
+        project = _make_project(tmp_path)
+        config = load_runtime_config(project_path=project)
+
+        # Patch JsonRpcWebSocketServer.publish_event at the class level to
+        # capture events instead of attempting real network IO.
+        seen: list[AgentEvent] = []
+
+        original_publish = JsonRpcWebSocketServer.publish_event
+
+        async def fake_publish(self: JsonRpcWebSocketServer, event: AgentEvent) -> None:  # type: ignore[override]
+            seen.append(event)
+
+        JsonRpcWebSocketServer.publish_event = fake_publish  # type: ignore[assignment]
+
+        try:
+            ctx = create_runtime_control_context(
+                config,
+                StartupMode.CREATE,
+                host="127.0.0.1",
+                port=0,
+            )
+
+            scheduler = ctx.daemon.scheduler
+            assert scheduler is not None
+            supervisor = scheduler.agent_supervisor
+
+            # The bridge from AgentSupervisor.on_agent_event to
+            # JsonRpcWebSocketServer.publish_event should be installed.
+            assert supervisor.on_agent_event is not None
+
+            # Seed minimal runtime state for the agent that FakeAcpClient
+            # will emit events for.
+            runtime_state = AgentRuntimeState(
+                agent_id="agent-1",
+                status=AgentStatus.RUNNING,
+                last_error=None,
+                event_stream=None,
+            )
+            supervisor.state.agents["agent-1"] = runtime_state
+
+            # The runtime should be using the dev-mode FakeAcpClient for ACP.
+            from nate_ntm.runtime.acp_client import FakeAcpClient
+
+            acp = ctx.daemon.acp_client
+            assert isinstance(acp, FakeAcpClient)
+
+            # Trigger an ACP turn, which will cause FakeAcpClient to emit an
+            # AgentEvent via its on_event callback. The daemon wiring routes
+            # this into AgentSupervisor.append_agent_event and on_agent_event,
+            # which in turn should schedule publish_event on the ws server.
+            conv = acp.ensure_conversation("agent-1")
+            assert conv
+            turn_id = acp.start_turn("agent-1", prompt="hello over ws")
+            assert turn_id
+
+            # Allow the loop.create_task used by the bridge to run the patched
+            # publish_event coroutine.
+            await asyncio.sleep(0)
+
+            assert len(seen) == 1
+            event = seen[0]
+            assert isinstance(event, AgentEvent)
+            assert event.agent_id == "agent-1"
+            assert event.source is AgentEventSource.ACP
+            assert event.type == "TurnCompleted"
+            assert event.payload["turn_id"] == turn_id
+            assert event.payload["conversation_id"] == conv
+        finally:
+            JsonRpcWebSocketServer.publish_event = original_publish  # type: ignore[assignment]
+
+    asyncio.run(main())
+

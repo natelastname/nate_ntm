@@ -309,6 +309,234 @@ def test_nate_oha_acp_client_start_and_stop_update_status(
 
 
 
+
+def test_nate_oha_acp_client_start_agent_emits_started_and_ready_events(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """start_agent emits process-started and ready events via on_event.
+
+    This covers the happy-path lifecycle where nate_OHA starts successfully
+    and remains running after the initial readiness check.
+    """
+
+    events: list[object] = []
+
+    def _on_event(event: object) -> None:
+        events.append(event)
+
+    client = _make_nate_oha_client(tmp_path, monkeypatch)
+    client.on_event = _on_event
+
+    meta = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+
+    client.start_agent("agent-1", metadata=meta)
+
+    # The adapter should emit a started event followed by a ready event.
+    assert len(events) == 2
+
+    from nate_ntm.runtime.events import AgentEvent
+
+    started, ready = events
+    assert isinstance(started, AgentEvent)
+    assert isinstance(ready, AgentEvent)
+
+    assert started.agent_id == "agent-1"
+    assert started.source is AgentEventSource.ACP
+    assert started.type == "nate_oha_process_started"
+    assert started.payload["pid"] == 12345
+
+    assert ready.agent_id == "agent-1"
+    assert ready.source is AgentEventSource.ACP
+    assert ready.type == "nate_oha_process_ready"
+    assert ready.payload["pid"] == 12345
+
+
+
+def test_nate_oha_acp_client_start_agent_emits_start_failed_event_on_immediate_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """start_agent emits a start_failed event when nate_OHA exits early.
+
+    This simulates a process that exits during the initial readiness check,
+    causing ``start_agent`` to mark the record as failed and raise
+    :class:`AcpClientError`.
+    """
+
+    events: list[object] = []
+
+    def _on_event(event: object) -> None:
+        events.append(event)
+
+    client = _make_nate_oha_client(tmp_path, monkeypatch)
+    client.on_event = _on_event
+
+    # Override the subprocess stub so that the spawned process appears to
+    # exit immediately with a non-zero code.
+    class FailingPopen:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.pid = 4242
+            self._returncode = 17
+
+        def poll(self) -> int:
+            return self._returncode
+
+        def wait(self, timeout: float | None = None) -> int:  # pragma: no cover - safety
+            return self._returncode
+
+        def terminate(self) -> None:  # pragma: no cover - safety
+            pass
+
+        def kill(self) -> None:  # pragma: no cover - safety
+            pass
+
+        @property
+        def returncode(self) -> int:
+            return self._returncode
+
+    monkeypatch.setattr(acp_mod.subprocess, "Popen", FailingPopen)
+
+    meta = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+
+    with pytest.raises(AcpClientError) as excinfo:
+        client.start_agent("agent-1", metadata=meta)
+
+    msg = str(excinfo.value)
+    assert "exited during startup" in msg
+
+    # Two events should have been emitted: started and start_failed.
+    assert [e.type for e in events] == [
+        "nate_oha_process_started",
+        "nate_oha_process_start_failed",
+    ]
+
+    started, failed = events
+    assert started.payload["pid"] == 4242
+    assert failed.payload["exit_code"] == 17
+
+
+
+def test_nate_oha_acp_client_stop_agent_emits_exited_event_on_clean_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """stop_agent emits nate_oha_process_exited for a clean termination."""
+
+    events: list[object] = []
+
+    def _on_event(event: object) -> None:
+        events.append(event)
+
+    client = _make_nate_oha_client(tmp_path, monkeypatch)
+    client.on_event = _on_event
+
+    # Stub Popen so that the process appears to be running when started and
+    # exits cleanly (exit code 0) when terminated.
+    class ExitingPopen:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.pid = 1111
+            self._returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self._returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self._returncode is None:
+                self._returncode = 0
+            return self._returncode
+
+        def terminate(self) -> None:
+            if self._returncode is None:
+                self._returncode = 0
+
+        def kill(self) -> None:  # pragma: no cover - safety
+            self._returncode = -9
+
+        @property
+        def returncode(self) -> int | None:
+            return self._returncode
+
+    monkeypatch.setattr(acp_mod.subprocess, "Popen", ExitingPopen)
+
+    meta = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+
+    client.start_agent("agent-1", metadata=meta)
+    client.stop_agent("agent-1", timeout=5.0)
+
+    # We expect three events: started, ready, exited.
+    types = [e.type for e in events]
+    assert types == [
+        "nate_oha_process_started",
+        "nate_oha_process_ready",
+        "nate_oha_process_exited",
+    ]
+
+    exited = events[-1]
+    assert exited.payload["exit_code"] == 0
+
+
+
+def test_nate_oha_acp_client_stop_agent_emits_crashed_event_on_non_zero_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """stop_agent emits nate_oha_process_crashed when exit code is non-zero."""
+
+    events: list[object] = []
+
+    def _on_event(event: object) -> None:
+        events.append(event)
+
+    client = _make_nate_oha_client(tmp_path, monkeypatch)
+    client.on_event = _on_event
+
+    # Stub Popen so that the process appears to be running and then exits
+    # with a non-zero code when terminated.
+    class CrashingPopen:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.pid = 2222
+            self._returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self._returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self._returncode is None:
+                self._returncode = 1
+            return self._returncode
+
+        def terminate(self) -> None:
+            if self._returncode is None:
+                self._returncode = 1
+
+        def kill(self) -> None:  # pragma: no cover - safety
+            self._returncode = -9
+
+        @property
+        def returncode(self) -> int | None:
+            return self._returncode
+
+    monkeypatch.setattr(acp_mod.subprocess, "Popen", CrashingPopen)
+
+    meta = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+
+    client.start_agent("agent-1", metadata=meta)
+    client.stop_agent("agent-1", timeout=5.0)
+
+    # We expect three events: started, ready, crashed.
+    types = [e.type for e in events]
+    assert types == [
+        "nate_oha_process_started",
+        "nate_oha_process_ready",
+        "nate_oha_process_crashed",
+    ]
+
+    crashed = events[-1]
+    assert crashed.payload["exit_code"] == 1
+
+
+
 def test_nate_oha_acp_client_ensure_conversation_is_idempotent_and_deterministic(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
