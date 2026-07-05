@@ -116,6 +116,47 @@ tests/
 
 **Structure Decision**: Reuse the existing single-project layout (`src/nate_ntm`, `tests/`) and introduce `NateOhaAcpClient` and related wiring inside `src/nate_ntm/runtime` (primarily `acp_client.py`, `adapters.py`, and `daemon.py`). No new top-level packages or projects are required. Tests will be added under the existing `tests/unit` and `tests/integration` trees.
 
+## Design Amendments (from FEEDBACK4.md)
+
+This feature adopts a narrow but explicit expansion of the `BaseAcpClient` abstraction so that it reflects the real responsibilities of an ACP runtime adapter.
+
+### BaseAcpClient as the ACP runtime adapter contract
+
+For this feature, `BaseAcpClient` is treated as the runtime-facing contract for ACP-backed agent execution, not just a conversation/turn ID helper.
+
+Required operations (to be implemented by both `FakeAcpClient` and `NateOhaAcpClient`):
+
+- `ensure_conversation(agent_id: str) -> str` – ensure an ACP conversation exists for the agent.
+- `start_agent(agent_id: str, *, metadata: AgentMetadata) -> None` – launch or attach to the ACP runtime backing the agent.
+- `start_turn(agent_id: str, prompt: str | None = None) -> str` – initiate a new unit of work for the agent and return its identifier.
+- `stop_agent(agent_id: str, *, timeout: float) -> None` – stop the ACP runtime for the agent with a bounded timeout and escalation.
+- `get_status(agent_id: str) -> AcpAgentStatus` – report the current ACP/runtime status in a small, structured form.
+
+Event delivery uses a callback style:
+
+- `BaseAcpClient` accepts or is configured with `on_event: Callable[[AgentEvent], None] | None`.
+- `NateOhaAcpClient` forwards ACP/runtime events through this callback.
+- `AgentSupervisor` routes those events into `AgentEventStream` and the existing WebSocket/JSON-RPC pipeline; adapters do not talk directly to transports.
+
+Lifecycle ownership boundary:
+
+- `BaseAcpClient` implementations own ACP runtime lifecycle for managed agents (process launch, readiness checks, shutdown, and status reporting).
+- `AgentSupervisor` owns in-memory runtime state and event routing, but does not spawn or kill ACP processes directly.
+- `RuntimeDaemon` and the scheduler invoke the adapter via the `BaseAcpClient` interface rather than reaching around it.
+
+NateOhaAcpClient is the concrete `BaseAcpClient` implementation responsible for nate_OHA process lifecycle, conversation setup, turn execution, status reporting, and event emission; it must not be hidden behind a separate sidecar-specific interface.
+
+### Implementation outline for this amendment
+
+These items will be reflected in `tasks.md` when `/speckit.tasks` is run:
+
+- Verify `NATE_OHA_GUIDE.md` and extract the nate_OHA process launch contract (executable/command, arguments, required environment variables, readiness signal, shutdown behavior, version/self-check command, and conversation-id resume mechanism) as the authoritative reference for NateOhaAcpClient.
+- Expand `BaseAcpClient` with `start_agent`, `stop_agent`, `get_status`, and event callback support.
+- Update `FakeAcpClient` to implement the expanded lifecycle contract in memory.
+- Remove `OpenHandsAcpClient` from production adapter selection while keeping fake vs real ACP modes clear.
+- Implement `NateOhaAcpClient` as the real ACP runtime adapter against the expanded `BaseAcpClient` contract.
+- Model a `NateOhaProcessRecord` inside `NateOhaAcpClient` and persist only the subset of that record needed for swarm shutdown/resume via the existing metadata store, surfacing structured status and events (not raw process internals) to the rest of the runtime.
+
 ## Complexity Tracking
 
 > **Fill ONLY if Constitution Check has violations that must be justified**
@@ -125,3 +166,4 @@ No constitution violations or additional structural complexity have been introdu
 | Violation | Why Needed | Simpler Alternative Rejected Because |
 |-----------|------------|---------------------------------------|
 |           |            |                                       |
+

@@ -128,9 +128,7 @@ All such events **MUST** be mapped into existing runtime event types or clearly 
 ## 7. Version and Compatibility Checks
 
 - Before launching any nate_OHA process, `NateOhaAcpClient` **MUST** verify that the installed `nate_OHA` implementation satisfies the minimum supported interface or version (FR-013).
-  - This MAY be implemented via:
-    - A `nate_OHA --version` or `nate_OHA acp --version` check, or
-    - A dedicated "capabilities" or "version" request over the ACP interface.
+  - This verification SHOULD use a documented self-check mechanism such as `nate_OHA --version` or `nate_OHA acp --version`, but MAY also be implemented via a dedicated "capabilities" or "version" request over the ACP interface.
 - If the version is incompatible:
   - The adapter **MUST** fail with a clear diagnostic.
   - The runtime **MUST NOT** attempt to launch nate_OHA–backed agents until the issue is resolved.

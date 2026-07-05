@@ -34,7 +34,7 @@ An operator wants to start a nate_ntm swarm where every managed agent is backed 
 **Acceptance Scenarios**:
 
 1. **Given** a project with agents configured to use the production NateOhaAcpClient, **when** the operator starts a swarm, **then** the runtime launches a nate_OHA ACP process for each managed agent and reports a healthy swarm state through the runtime API.
-2. **Given** a running swarm using NateOhaAcpClient, **when** new work arrives for agents via Agent Mail, **then** nate_OHA processes execute turns for those agents and the swarm continues to appear healthy in runtime status.
+2. **Given** a running swarm using NateOhaAcpClient, **when** the scheduler detects new eligible work for agents from Agent Mail, **then** nate_OHA processes execute turns for those agents and the swarm continues to appear healthy in runtime status.
 
 ---
 
@@ -88,8 +88,8 @@ An operator or client application wants to observe and debug nate_OHA-backed age
 
 - **FR-001**: The runtime MUST provide a production NateOhaAcpClient adapter that implements the shared BaseAcpClient abstraction. NateOhaAcpClient becomes the canonical production implementation of BaseAcpClient.
 - **FR-002**: For every managed agent configured to use the production adapter, the runtime MUST launch, supervise, and terminate a dedicated nate_OHA ACP process for that agent and associate it with that agent's runtime metadata.
-- **FR-003**: The adapter MUST configure each nate_OHA process with Agent Mail integration as described in `NATE_OHA_GUIDE.md`, including the correct mapping between projects, agents, and coordination mailboxes.
-- **FR-004**: For each nate_OHA-backed agent, the adapter MUST configure each nate_OHA instance using the supported command-line interface and environment variables defined in `NATE_OHA_GUIDE.md`, including the agent's persisted Agent Mail identity, credentials (or references to them), and other required runtime context (such as project directory and agent identifier), so that nate_OHA can reconnect to the correct mailbox and underlying OpenHands conversation.
+- **FR-003**: The adapter MUST launch nate_OHA using the process contract defined in `NATE_OHA_GUIDE.md`, including Agent Mail project, agent identity, token or credential reference, working directory, and, where applicable, the persisted OpenHands conversation identifier.
+- **FR-004**: For each nate_OHA-backed agent, the adapter MUST apply this contract consistently so that nate_OHA can reconnect to the correct Agent Mail mailbox and underlying OpenHands conversation without relying on undocumented flags or environment variables.
 - **FR-005**: When the runtime shuts down a swarm and later resumes it, the adapter MUST recreate nate_OHA processes such that each agent reuses the same Agent Mail identity and the same persisted OpenHands conversation identifier, so that the underlying OpenHands session resumes rather than creating a new conversation.
 - **FR-006**: The adapter MUST supervise the lifecycle of each nate_OHA process, including detecting startup failures, abnormal exits, and hangs, and MUST surface these conditions to the runtime as explicit events for policy-driven restart and failure handling.
 - **FR-007**: The adapter MUST treat a single canonical event source from nate_OHA (for example, the ACP event stream) as authoritative for agent-level events, and MUST expose those events (including turn completions, errors, and other relevant signals) into the existing runtime event pipeline so they appear through `AgentEventStream`, `agent.get_detail`, and runtime event subscription APIs in a form consistent with other ACP adapters.
@@ -99,7 +99,41 @@ An operator or client application wants to observe and debug nate_OHA-backed age
 - **FR-011**: The adapter MUST define and document the complete process launch contract for nate_OHA, including at minimum: the executable name, command-line arguments, required environment variables, working directory expectations, startup readiness detection, shutdown procedure, timeout behavior, and restart behavior.
 
 - **FR-012**: The runtime MUST interact with managed nate_OHA instances exclusively through NateOhaAcpClient. NateOhaAcpClient owns the complete lifecycle of each managed nate_OHA subprocess, including creation, supervision, and termination.
-- **FR-013**: NateOhaAcpClient MUST verify that the installed nate_OHA executable satisfies the minimum supported interface or version before attempting to launch managed agents, and MUST fail with a clear diagnostic if the version is incompatible.
+- **FR-013**: NateOhaAcpClient MUST verify that the installed nate_OHA executable satisfies the minimum supported interface or version (for example via `nate_OHA --version` or another documented self-check command) before attempting to launch managed agents, and MUST fail with a clear diagnostic if the version is incompatible. This verification is part of the nate_OHA process launch contract.
+
+
+### Interface Contract: BaseAcpClient
+
+BaseAcpClient is no longer treated as a thin conversation/turn ID helper. For this feature, it is explicitly the runtime-facing contract for ACP-backed agent execution.
+
+**Required operations (per-implementation contract)**
+
+Any BaseAcpClient implementation (including FakeAcpClient and NateOhaAcpClient) MUST provide the following methods:
+
+- `ensure_conversation(agent_id: str) -> str`
+  - Ensure an ACP conversation exists for `agent_id` and return its opaque identifier.
+- `start_agent(agent_id: str, *, metadata: AgentMetadata) -> None`
+  - Launch or attach to the ACP runtime instance backing `agent_id`, using the agent's persisted metadata and the swarm configuration.
+- `start_turn(agent_id: str, prompt: str | None = None) -> str`
+  - Initiate a new unit of ACP work (a "turn") for `agent_id` and return a turn/run identifier.
+- `stop_agent(agent_id: str, *, timeout: float) -> None`
+  - Request a graceful stop of the ACP runtime backing `agent_id` and enforce a bounded timeout, escalating according to policy on timeout.
+- `get_status(agent_id: str) -> AcpAgentStatus`
+  - Report the current ACP/runtime status for `agent_id` in a small, structured form that can be mapped onto `AgentRuntimeState` and exposed through the runtime APIs.
+
+**Event delivery model**
+
+- BaseAcpClient implementations MUST support an event callback of the form `on_event: Callable[[AgentEvent], None] | None`.
+- NateOhaAcpClient MUST forward ACP and runtime events for nate_OHA-backed agents through this callback.
+- The runtime (via `AgentSupervisor`) is responsible for routing these events into `AgentEventStream` and the existing WebSocket/JSON-RPC pipeline; ACP adapters do not talk directly to transport layers.
+
+**Lifecycle ownership boundary**
+
+- BaseAcpClient implementations own ACP runtime lifecycle for agents they manage (process launch, readiness checks, shutdown, and status reporting).
+- AgentSupervisor owns in-memory runtime state and event routing, but does not spawn or kill ACP processes directly.
+- RuntimeDaemon and scheduler invoke the ACP adapter via the BaseAcpClient interface; they do not reach around it to manipulate nate_OHA processes.
+
+NateOhaAcpClient MUST NOT be hidden behind a sidecar-specific interface; it is the concrete BaseAcpClient implementation responsible for nate_OHA process lifecycle, conversation setup, turn execution, status reporting, and event emission.
 
 
 ### Key Entities *(include if feature involves data)*
@@ -107,6 +141,7 @@ An operator or client application wants to observe and debug nate_OHA-backed age
 - **BaseAcpClient (ACP Adapter Abstraction)**: The shared abstraction implemented by all ACP clients. It defines the contract between the swarm runtime and any ACP adapter. Both FakeAcpClient and NateOhaAcpClient implement BaseAcpClient.
 - **NateOhaAcpClient (Production ACP Adapter)**: The production ACP adapter implementation used by nate_ntm to launch, supervise, and communicate with nate_OHA instances on behalf of managed agents. NateOhaAcpClient owns the complete lifecycle of each managed nate_OHA subprocess, and the runtime interacts with nate_OHA exclusively through this adapter.
 - **FakeAcpClient (Fake/Dev/Test Adapter)**: The fake ACP adapter implementation used for development and tests. It remains available for non-production use and continues to implement BaseAcpClient.
+- **NateOhaAgentRuntimeRecord (Persisted Agent Runtime Metadata)**: A persisted per-agent record (backed by `AgentMetadata` in `metadata_store`) containing, at minimum, the Agent Mail identity reference, persisted OpenHands conversation identifier, last known process status, restart counters or policy state, and any compatibility/version information required to safely launch nate_OHA for that agent.
 - **nate_OHA Instance**: A single nate_OHA ACP process running on behalf of one managed agent. It connects to Agent Mail, executes turns, and emits agent-level events over the ACP connection.
 - **Agent Mail Identity**: The persisted identity and credentials associated with a managed agent in Agent Mail, used by nate_OHA to read and write coordination messages for that agent.
 - **Swarm Runtime (nate_ntm)**: The long-lived process that manages a swarm of agents, selects the ACP adapter, supervises per-agent processes, and exposes the runtime API and event streams to clients.
