@@ -297,6 +297,12 @@ class RuntimeDaemon:
             agent_mail_client=agent_mail_client,
         )
 
+        # Wire the ACP adapter's event callback into the AgentSupervisor so
+        # that adapter-emitted AgentEvent instances are appended to the
+        # in-memory per-agent event streams and forwarded to any configured
+        # listeners (for example, the WebSocket control API bridge).
+        acp_client.on_event = agent_supervisor.append_agent_event
+
         return cls(
             config=config,
             metadata_store=store,
@@ -366,6 +372,12 @@ class RuntimeDaemon:
             agent_supervisor=agent_supervisor,
             agent_mail_client=agent_mail_client,
         )
+
+        # Wire the ACP adapter's event callback into the AgentSupervisor so
+        # that adapter-emitted AgentEvent instances are appended to the
+        # in-memory per-agent event streams and forwarded to any configured
+        # listeners (for example, the WebSocket control API bridge).
+        acp_client.on_event = agent_supervisor.append_agent_event
 
         # Rebind the Agent Mail project identifier and per-agent identities.
         # These helpers are required to be idempotent: for a given

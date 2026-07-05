@@ -158,6 +158,44 @@ class AgentSupervisor:
         for metadata in self.iter_configured_agents():
             self.ensure_agent_runtime_state(metadata)
 
+
+    def append_agent_event(self, event: AgentEvent) -> None:
+        """Append an externally generated :class:`AgentEvent` to a stream.
+
+        This is the primary entry point used by integration adapters (for
+        example, ACP and Agent Mail) that already construct fully populated
+        :class:`AgentEvent` instances and expose them via a callback such as
+        :attr:`BaseAcpClient.on_event`.
+
+        When the event's ``agent_id`` corresponds to a configured agent in
+        :class:`SwarmMetadata`, a :class:`AgentRuntimeState` entry is created
+        on demand if needed. Events for unknown agents are ignored
+        defensively; in a full implementation these would be logged for
+        diagnostics.
+        """
+
+        # Prefer metadata-backed registration when available so that runtime
+        # state remains consistent with the configured swarm description.
+        metadata = self.swarm_metadata.agents.get(event.agent_id)
+        if metadata is not None:
+            runtime_state = self.ensure_agent_runtime_state(metadata)
+        else:
+            runtime_state = self.state.agents.get(event.agent_id)
+            if runtime_state is None:
+                # Unknown agent identifier; drop the event rather than raising
+                # to keep the callback path robust. Higher layers can add
+                # logging once the runtime has a centralized logger.
+                return
+
+        stream = self._get_or_create_event_stream(runtime_state)
+        stream.append(event)
+
+        # Forward the event to any configured listener (for example, the
+        # WebSocket control API bridge) so that subscribers receive a
+        # consistent stream regardless of origin.
+        if self.on_agent_event is not None:
+            self.on_agent_event(event)
+
     # ------------------------------------------------------------------
     # Placeholders for future lifecycle management
     # ------------------------------------------------------------------

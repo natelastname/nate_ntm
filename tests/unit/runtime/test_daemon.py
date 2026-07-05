@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import os
 
 import pytest
 
@@ -20,6 +21,7 @@ from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
 from nate_ntm.runtime.agent_mail_client import FakeAgentMailClient
 from nate_ntm.runtime.adapters import RuntimeAdapters
 from nate_ntm.runtime.acp_client import NateOhaAcpClient
+from nate_ntm.runtime.events import AgentEventSource
 from nate_ntm.runtime.daemon import (
     MetadataAlreadyExistsError,
     MetadataMissingError,
@@ -528,4 +530,162 @@ def test_runtime_daemon_resume_owns_in_memory_integration_clients(tmp_path: Path
     from nate_ntm.runtime.acp_client import FakeAcpClient
 
     assert isinstance(daemon.acp_client, FakeAcpClient)
+
+
+
+
+def test_runtime_daemon_acp_events_flow_into_supervisor_stream_with_fake_client(
+    tmp_path: Path,
+) -> None:
+    """Events from FakeAcpClient land in the AgentSupervisor stream (T230).
+
+    This verifies that :class:`RuntimeDaemon.create` wires the ACP adapter's
+    ``on_event`` callback into :class:`AgentSupervisor.append_agent_event` so
+    that events emitted by :class:`FakeAcpClient` are recorded in the
+    per-agent :class:`AgentEventStream`.
+    """
+
+    project = tmp_path / "project"
+    config = _make_config(project)
+
+    # Construct the daemon in create mode with a single agent using the
+    # default (fake) adapters.
+    daemon = RuntimeDaemon.create(config, agent_count=1)
+
+    assert daemon.acp_client is not None
+    from nate_ntm.runtime.acp_client import FakeAcpClient
+
+    assert isinstance(daemon.acp_client, FakeAcpClient)
+
+    acp = daemon.acp_client
+
+    # Sanity: the swarm metadata should contain the configured agent.
+    assert set(daemon.swarm_metadata.agents.keys()) == {"agent-1"}
+
+    # Trigger a fake ACP turn, which should emit an AgentEvent via the
+    # adapter's ``on_event`` callback. The daemon's wiring should route this
+    # into the AgentSupervisor's in-memory event stream for the agent.
+    turn_id = acp.start_turn("agent-1", prompt="hello from test")
+    assert turn_id
+
+    # A RuntimeState entry and event stream should now exist for the agent,
+    # with exactly one ACP-originated event reflecting the completed turn.
+    runtime_state = daemon.state.agents.get("agent-1")
+    assert runtime_state is not None
+    stream = runtime_state.event_stream
+    assert stream is not None
+
+    events = stream.get_events()
+    assert len(events) == 1
+
+    event = events[0]
+    assert event.agent_id == "agent-1"
+    assert event.source is AgentEventSource.ACP
+    assert event.type == "TurnCompleted"
+    assert event.payload["turn_id"] == turn_id
+
+    # The conversation ID in the payload should match the adapter's view.
+    conv = acp.ensure_conversation("agent-1")
+    assert event.payload["conversation_id"] == conv
+
+
+
+def test_runtime_daemon_acp_events_flow_into_supervisor_stream_with_nate_oha(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Events from NateOhaAcpClient land in the AgentSupervisor stream (T230).
+
+    This focuses on the wiring between :class:`BaseAcpClient.on_event` and
+    :meth:`AgentSupervisor.append_agent_event` rather than on the concrete
+    subprocess behavior. Events are synthesized via
+    :meth:`NateOhaAcpClient._make_process_event` and delivered through the
+    adapter's callback to mirror the real process-lifecycle events.
+    """
+
+    project = tmp_path / "project"
+    project.mkdir(parents=True, exist_ok=True)
+
+    # Take an explicit environment snapshot so the config loader does not
+    # consult any repository-level .env files.
+    env_snapshot = dict(os.environ)
+    config = load_runtime_config(project_path=project, env=env_snapshot)
+
+    # Use a real NateOhaAcpClient instance with external dependencies stubbed
+    # in the same way as the dedicated adapter tests.
+    from nate_ntm.runtime import acp_client as acp_mod
+    from nate_ntm.runtime.acp_client import NateOhaAcpClient
+
+    client = NateOhaAcpClient(config=config)
+
+    # Avoid invoking the real nate_OHA binary during this test.
+    monkeypatch.setattr(client, "_check_version", lambda: None)
+
+    # Stub out ``subprocess.Popen`` so no real processes are spawned if
+    # methods like ``start_agent`` are exercised in future tests.
+    class DummyPopen:
+        def __init__(self, *args: object, **kwargs: object) -> None:  # pragma: no cover - safety
+            self.pid = 12345
+            self._returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self._returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self._returncode is None:
+                self._returncode = 0
+            return self._returncode
+
+        def terminate(self) -> None:
+            if self._returncode is None:
+                self._returncode = 0
+
+        def kill(self) -> None:
+            self._returncode = -9
+
+        @property
+        def returncode(self) -> int | None:
+            return self._returncode
+
+    def fake_popen(*args: object, **kwargs: object) -> DummyPopen:  # pragma: no cover - safety
+        return DummyPopen(*args, **kwargs)
+
+    monkeypatch.setattr(acp_mod.subprocess, "Popen", fake_popen)
+
+    # Use a fake Agent Mail client so RuntimeDaemon.create can construct the
+    # initial swarm metadata without external I/O.
+    agent_mail = FakeAgentMailClient(config=config)
+    adapters = RuntimeAdapters(agent_mail=agent_mail, acp=client)
+
+    daemon = RuntimeDaemon.create(config, agent_count=1, adapters=adapters)
+
+    # Sanity: the daemon should be using our NateOhaAcpClient instance.
+    assert daemon.acp_client is client
+
+    # Synthesize a nate_OHA process-lifecycle event and deliver it via the
+    # adapter's on_event callback. RuntimeDaemon.create should have wired this
+    # callback to AgentSupervisor.append_agent_event.
+    event = client._make_process_event(  # type: ignore[attr-defined]
+        agent_id="agent-1",
+        event_type="nate_oha_process_started",
+        payload={"pid": 12345},
+    )
+    assert client.on_event is not None
+    client.on_event(event)
+
+    # The AgentSupervisor should now have a RuntimeState entry and event
+    # stream for the agent with our synthesized event recorded.
+    runtime_state = daemon.state.agents.get("agent-1")
+    assert runtime_state is not None
+    stream = runtime_state.event_stream
+    assert stream is not None
+
+    events = stream.get_events()
+    assert len(events) == 1
+
+    recorded = events[0]
+    assert recorded.agent_id == "agent-1"
+    assert recorded.source is AgentEventSource.ACP
+    assert recorded.type == "nate_oha_process_started"
+    assert recorded.payload["pid"] == 12345
 

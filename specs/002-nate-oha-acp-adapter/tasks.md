@@ -119,7 +119,7 @@ For this feature, no new project scaffolding or package layout changes are requi
     - Update the `OpenHandsAcpClient` docstring to mark it as legacy/experimental only (if it is retained for compatibility testing) and adjust `__all__` exports as appropriate.
   - In `tests/integration/runtime_acp/test_openhands_acp_client_integration_t102.py`, update the module docstring and skip conditions so that these tests are clearly optional/legacy (for example, by strengthening the skip reason) and do not affect the default production path, which should use `NateOhaAcpClient`.
 
-- [ ] T217 [US1] Ensure runtime creation uses nate_OHA-compatible metadata.
+- [x] T217 [US1] Ensure runtime creation uses nate_OHA-compatible metadata.
   - In `RuntimeDaemon.create` (`src/nate_ntm/runtime/daemon.py`), ensure that when `AdapterKind.REAL` is selected for ACP:
     - The initial agents created via the `agent_count` parameter use `NateOhaAcpClient.ensure_conversation` (or the appropriate nate_OHA mechanism) to derive a stable conversation identifier.
     - The resulting `conversation_id` and Agent Mail identity fields are written into `AgentMetadata` and persisted via `MetadataStore` in a way that is compatible with nate_OHA’s reconnection and resume behavior (per `data-model.md` and `contracts/nate_oha_process_launch.md`).
@@ -157,7 +157,7 @@ For this feature, no new project scaffolding or package layout changes are requi
     - Once a non-empty conversation identifier is available, it MUST be written back into `AgentMetadata.conversation_id` via `MetadataStore.save_agent_metadata` so that subsequent launches and resumes reuse the same ID.
   - This behavior must satisfy FR-005 and the invariants in `specs/002-nate-oha-acp-adapter/data-model.md` (section 3.2).
 
-- [ ] T221 [US2] Enforce nate_OHA conversation continuity on resume.
+- [x] T221 [US2] Enforce nate_OHA conversation continuity on resume.
   - In `RuntimeDaemon.resume` (`src/nate_ntm/runtime/daemon.py`), extend the existing resume-time validation so that when `acp_client` is a `NateOhaAcpClient` and `AgentMetadata.conversation_id` is non-empty for an agent:
     - Calling `acp_client.ensure_conversation(agent_id)` yields the same identifier.
     - Any mismatch between the adapter-derived ID and the persisted `conversation_id` is logged and raised as a `RuntimeStartupError`, mirroring the existing error structure for ACP mismatches.
