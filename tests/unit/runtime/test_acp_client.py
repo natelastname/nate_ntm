@@ -13,7 +13,9 @@ from pathlib import Path
 import pytest
 
 from nate_ntm.config.runtime_config import load_runtime_config
-from nate_ntm.runtime.acp_client import FakeAcpClient, OpenHandsAcpClient
+from nate_ntm.runtime.acp_client import AcpAgentStatus, FakeAcpClient, OpenHandsAcpClient
+from nate_ntm.runtime.events import AgentEventSource
+from nate_ntm.runtime.metadata_store import AgentMetadata
 
 
 def _make_fake_client(tmp_path: Path) -> FakeAcpClient:
@@ -92,6 +94,62 @@ def test_fake_acp_client_allocates_unique_turn_ids(tmp_path: Path) -> None:
     client.ensure_conversation("agent-2")
     other_turn = client.start_turn("agent-2")
     assert other_turn.startswith("fake-turn:agent-2:")
+
+
+def test_fake_acp_client_start_and_stop_agent_update_status(tmp_path: Path) -> None:
+    """``start_agent``/``stop_agent`` update adapter-level status for agents."""
+
+    client = _make_fake_client(tmp_path)
+
+    # Before an agent is started, status should default to ``idle``.
+    status_before = client.get_status("agent-1")
+    assert isinstance(status_before, AcpAgentStatus)
+    assert status_before.agent_id == "agent-1"
+    assert status_before.state == "idle"
+
+    # After starting the agent, status should report it as running.
+    meta = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+    client.start_agent("agent-1", metadata=meta)
+
+    status_running = client.get_status("agent-1")
+    assert status_running.state == "running"
+
+    # Stopping the agent should transition it to a terminated state.
+    client.stop_agent("agent-1", timeout=1.0)
+    status_stopped = client.get_status("agent-1")
+    assert status_stopped.state == "terminated"
+
+
+def test_fake_acp_client_start_turn_emits_event_when_callback_configured(tmp_path: Path) -> None:
+    """``start_turn`` emits an AgentEvent via the optional callback."""
+
+    events: list[dict] = []
+
+    def _on_event(event) -> None:
+        events.append(event)
+
+    client = _make_fake_client(tmp_path)
+    client.on_event = _on_event
+
+    # Calling ``start_turn`` should allocate a turn ID and emit an event.
+    turn_id = client.start_turn("agent-1", prompt="hello world")
+    assert turn_id
+
+    assert len(events) == 1
+    event = events[0]
+
+    assert event.agent_id == "agent-1"
+    assert event.source is AgentEventSource.ACP
+    assert event.type == "TurnCompleted"
+    assert event.payload["adapter"] == "fake"
+    assert event.payload["turn_id"] == turn_id
+
+    # The conversation ID in the payload should match ensure_conversation.
+    conv = client.ensure_conversation("agent-1")
+    assert event.payload["conversation_id"] == conv
+
+    # When a prompt is provided it should be echoed into the payload.
+    assert event.payload["prompt"] == "hello world"
 
 
 def test_openhands_acp_client_ensures_stable_conversation_ids(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
