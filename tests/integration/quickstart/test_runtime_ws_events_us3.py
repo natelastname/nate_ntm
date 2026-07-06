@@ -1,7 +1,7 @@
-"""Integration test: runtime agent events over WebSocket JSON-RPC (US3).
+"""Integration test: runtime agent events via FastAPI JSON-RPC control API (US3).
 
 This test builds on the US1 quickstart wiring for
-``RuntimeDaemon`` + WebSocket JSON-RPC control API and exercises the
+``RuntimeDaemon`` + FastAPI/JSON-RPC control API and exercises the
 agent event streaming path defined for US3:
 
 * Agent runtime events are appended to per-agent ``AgentEventStream``
@@ -9,10 +9,10 @@ agent event streaming path defined for US3:
 * The :class:`AgentSupervisor` exposes an ``on_agent_event`` callback
   that is invoked whenever a new event is appended.
 * :func:`nate_ntm.runtime.runner.create_runtime_control_context` wires
-  this callback into
-  :meth:`nate_ntm.api.jsonrpc_ws.JsonRpcWebSocketServer.publish_event`,
+  this callback into the FastAPI app's
+  :pydata:`~fastapi.applications.FastAPI.state.publish_event` helper,
   which in turn emits ``events.notify`` JSON-RPC notifications to
-  subscribed WebSocket clients.
+  subscribed WebSocket clients connected to ``/events``.
 
 The goal of this test is to validate that a runtime started via the
 runner helpers will publish a concrete runtime-originated agent event
@@ -29,6 +29,7 @@ from pathlib import Path
 
 import websockets
 
+from nate_ntm.api.client import JsonRpcHttpClient
 from nate_ntm.api.jsonrpc import JSONRPC_VERSION
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
 from nate_ntm.runtime.daemon import StartupMode
@@ -73,51 +74,6 @@ def _make_resume_config_and_metadata(tmp_path: Path) -> RuntimeConfig:
     return config
 
 
-class _JsonRpcWsTestClient:
-    """Minimal long-lived JSON-RPC client for WebSocket tests.
-
-    This helper is intentionally small and tailored for integration tests:
-
-    * It keeps a single WebSocket connection open.
-    * It can issue multiple JSON-RPC requests over that connection.
-    * It can receive out-of-band notifications such as ``events.notify``.
-    """
-
-    def __init__(self, websocket: websockets.WebSocketClientProtocol) -> None:  # type: ignore[name-defined]
-        self._ws = websocket
-        self._next_id = 1
-
-    async def call(self, method: str, params: dict[str, object] | None = None) -> dict[str, object]:
-        request_id = self._next_id
-        self._next_id += 1
-
-        request = {
-            "jsonrpc": JSONRPC_VERSION,
-            "method": method,
-            "params": params or {},
-            "id": request_id,
-        }
-
-        await self._ws.send(json.dumps(request))
-        raw = await self._ws.recv()
-        response = json.loads(raw)
-
-        assert response["jsonrpc"] == JSONRPC_VERSION
-        assert response["id"] == request_id
-        return response
-
-    async def call_for_result(self, method: str, params: dict[str, object] | None = None) -> dict[str, object]:
-        response = await self.call(method, params)
-        assert "result" in response
-        return response["result"]
-
-    async def recv_notification(self, *, timeout: float = 5.0) -> dict[str, object]:
-        raw = await asyncio.wait_for(self._ws.recv(), timeout=timeout)
-        message = json.loads(raw)
-        assert message["jsonrpc"] == JSONRPC_VERSION
-        assert "method" in message
-        return message
-
 
 
 def test_runtime_ws_events_us3_agent_failure_publishes_events_notify(tmp_path: Path) -> None:
@@ -149,31 +105,45 @@ def test_runtime_ws_events_us3_agent_failure_publishes_events_notify(tmp_path: P
         serve_task = asyncio.create_task(serve_runtime_control_api(ctx))
 
         async def _wait_for_server_port() -> int:
-            """Wait until the WebSocket server has bound to a TCP port."""
+            """Wait until the control API server has bound to a TCP port."""
 
             for _ in range(50):
-                port = ctx.ws_server.bound_port
+                port = ctx.bound_port
                 if port != 0:
                     return port
                 await asyncio.sleep(0.05)
-            raise AssertionError("WebSocket server did not bind to a port in time")
+            raise AssertionError("Control API server did not bind to a port in time")
 
         port = await _wait_for_server_port()
 
-        uri = f"ws://127.0.0.1:{port}"
+        # Use the HTTP JSON-RPC client for command-style interactions with the
+        # runtime control API (including events.subscribe, agent.get_detail,
+        # and runtime.shutdown).
+        rpc_client = JsonRpcHttpClient(host="127.0.0.1", port=port, timeout=5.0)
+
+        # 1. Subscribe to events for the single configured agent via HTTP
+        # JSON-RPC and capture the assigned subscription_id.
+        sub_result = await rpc_client.call_for_result(
+            "events.subscribe",
+            {"agent_ids": ["nav-1"], "include_runtime": True},
+        )
+        sub_id = sub_result["subscription_id"]
+        assert isinstance(sub_id, str)
+
+        # 2. Connect a WebSocket client to the /events endpoint and attach it
+        # to the subscription using a small JSON handshake.
+        uri = f"ws://127.0.0.1:{port}/events"
 
         async with websockets.connect(uri) as websocket:
-            client = _JsonRpcWsTestClient(websocket)
+            await websocket.send(json.dumps({"subscription_id": sub_id}))
 
-            # 1. Subscribe to events for the single configured agent.
-            sub_result = await client.call_for_result(
-                "events.subscribe",
-                {"agent_ids": ["nav-1"], "include_runtime": True},
-            )
-            sub_id = sub_result["subscription_id"]
-            assert isinstance(sub_id, str)
+            # Give the server a brief moment to attach the WebSocket to the
+            # in-process subscription registry before we start driving the rest
+            # of the scenario. This mirrors the debug script used to validate
+            # the end-to-end wiring.
+            await asyncio.sleep(0.1)
 
-            # 2. Wait until the daemon has fully started and the scheduler has
+            # 3. Wait until the daemon has fully started and the scheduler has
             # registered runtime state for the configured agent. This mirrors
             # the expectations validated in the US1 quickstart test.
             async def _wait_for_agent_runtime_state() -> None:
@@ -188,17 +158,27 @@ def test_runtime_ws_events_us3_agent_failure_publishes_events_notify(tmp_path: P
             agent_state = ctx.daemon.state.agents["nav-1"]
             assert agent_state.status is AgentStatus.IDLE
 
-            # 3. Trigger a runtime-originated failure event via the scheduler.
+            # 4. Trigger a runtime-originated failure event via the scheduler.
             scheduler = ctx.daemon.scheduler
             assert scheduler is not None
 
+            # Ensure the AgentSupervisor->control API event bridge is wired.
+            assert scheduler.agent_supervisor.on_agent_event is not None
+
             scheduler.mark_agent_failed("nav-1", error="boom")
 
-            # 4. The WebSocket client should receive an ``events.notify``
+            # Give the event bridge a brief moment to fan out the notification
+            # before we start awaiting frames from the WebSocket client. This
+            # follows the pattern validated in the standalone debug script.
+            await asyncio.sleep(0.5)
+
+            # 5. The WebSocket client should receive an ``events.notify``
             # message for the subscribed agent. Use a small timeout to avoid
             # hanging the test if the wiring is broken.
-            notify = await client.recv_notification(timeout=5.0)
+            raw_notify = await asyncio.wait_for(websocket.recv(), timeout=5.0)
+            notify = json.loads(raw_notify)
 
+            assert notify["jsonrpc"] == JSONRPC_VERSION
             assert notify["method"] == "events.notify"
             params = notify["params"]
             assert params["subscription_id"] == sub_id
@@ -210,9 +190,9 @@ def test_runtime_ws_events_us3_agent_failure_publishes_events_notify(tmp_path: P
             # ``AgentSupervisor._append_runtime_event``.
             assert notified_event["event_id"].startswith("nav-1:")
 
-            # 5. Fetch the agent detail snapshot and verify that the
-            # in-memory ``AgentEventStream`` replays the same event.
-            detail = await client.call_for_result(
+            # 6. Fetch the agent detail snapshot over HTTP JSON-RPC and verify
+            # that the in-memory ``AgentEventStream`` replays the same event.
+            detail = await rpc_client.call_for_result(
                 "agent.get_detail",
                 {"agent_id": "nav-1", "max_events": 10},
             )
@@ -225,9 +205,9 @@ def test_runtime_ws_events_us3_agent_failure_publishes_events_notify(tmp_path: P
             assert detail_event["agent_id"] == notified_event["agent_id"]
             assert detail_event["type"] == notified_event["type"]
 
-            # 6. Request a graceful shutdown so the serve loop can exit
-            # cleanly before the test completes.
-            shutdown_result = await client.call_for_result(
+            # 7. Request a graceful shutdown via HTTP JSON-RPC so the serve
+            # loop can exit cleanly before the test completes.
+            shutdown_result = await rpc_client.call_for_result(
                 "runtime.shutdown",
                 {"timeout_seconds": 5},
             )

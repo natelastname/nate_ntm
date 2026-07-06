@@ -37,6 +37,7 @@ application used by the CLI/runtime runner helpers.
 """
 
 import json
+import logging
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -47,6 +48,8 @@ from .server import RuntimeApiServer
 from ..runtime.events import AgentEvent
 
 __all__ = ["create_runtime_api_app", "AgentNotFoundError", "RuntimeStateConflictError"]
+
+logger = logging.getLogger(__name__)
 
 
 class AgentNotFoundError(BaseError):
@@ -283,7 +286,19 @@ def create_runtime_api_app(api_server: RuntimeApiServer) -> API:
         if not isinstance(event, AgentEvent):  # Defensive type check.
             raise TypeError("publish_event expects an AgentEvent instance")
 
+        logger.debug(
+            "publish_event_called",
+            extra={
+                "agent_id": event.agent_id,
+                "event_type": event.type,
+            },
+        )
+
         messages = build_events_notify_messages(api_server, event)
+        logger.debug(
+            "publish_event_notifications_built",
+            extra={"notification_count": len(messages)},
+        )
 
         subscription_map: Dict[str, Set[WebSocket]] = app.state.subscription_clients
         client_map: Dict[WebSocket, Set[str]] = app.state.client_subscriptions

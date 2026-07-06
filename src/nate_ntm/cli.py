@@ -22,7 +22,7 @@ import json
 import typer
 from dotenv import load_dotenv
 
-from .api.client import JsonRpcWebSocketClient
+from .api.client import JsonRpcHttpClient
 from .config.runtime_config import RuntimeConfig, load_runtime_config
 from .runtime.daemon import (
     MetadataAlreadyExistsError,
@@ -124,7 +124,7 @@ def runtime_start(
         False,
         "--with-control-api",
         help=(
-            "Run a WebSocket JSON-RPC control API alongside the daemon and "
+            "Run the FastAPI/JSON-RPC control API alongside the daemon and "
             "block until a shutdown is requested via the runtime API."
         ),
     ),
@@ -135,8 +135,8 @@ def runtime_start(
     project's metadata directory. In ``resume`` mode it will load
     existing metadata.
 
-    When ``--with-control-api`` is provided, this command also starts a
-    WebSocket JSON-RPC control API bound to the configured host/port and
+    When ``--with-control-api`` is provided, this command also starts the
+    FastAPI/JSON-RPC control API bound to the configured host/port and
     blocks until a graceful shutdown is requested via the runtime API.
     Without this flag, it exercises a short start → shutdown cycle for
     smoke-testing daemon wiring.
@@ -224,9 +224,9 @@ def api_call(
         help="Control API TCP port (default: 8765)",
     ),
 ) -> None:
-    """Invoke a runtime control API method via JSON-RPC over WebSocket.
+    """Invoke a runtime control API method via JSON-RPC over HTTP.
 
-    This command is a thin wrapper over :class:`JsonRpcWebSocketClient` and
+    This command is a thin wrapper over :class:`JsonRpcHttpClient` and
     is primarily intended for quickstart-style inspection and debugging.
     """
 
@@ -259,7 +259,7 @@ def api_call(
 
     params = _parse_params(param)
 
-    client = JsonRpcWebSocketClient(host=host, port=port)
+    client = JsonRpcHttpClient(host=host, port=port)
 
     try:
         response = asyncio.run(client.call_async(method, params or {}))

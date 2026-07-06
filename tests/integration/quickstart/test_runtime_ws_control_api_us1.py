@@ -1,15 +1,15 @@
-"""Integration test: RuntimeDaemon + WebSocket JSON-RPC control API (US1).
+"""Integration test: RuntimeDaemon + FastAPI JSON-RPC control API (US1).
 
 This test exercises a thin end-to-end path from a project directory on
  disk through:
 
 * ``RuntimeConfig`` resolution.
 * ``RuntimeDaemon.resume`` startup semantics.
-* ``RuntimeApiServer`` exposed via :class:`JsonRpcWebSocketServer`.
-* A real WebSocket JSON-RPC client talking to the running runtime.
+* ``RuntimeApiServer`` exposed via the unified FastAPI control API.
+* A real HTTP JSON-RPC client talking to the running runtime.
 
 The goal is to complement existing quickstart-style tests by validating
-that a runtime started in-process with the WebSocket control API can be
+that a runtime started in-process with the control API can be
 queried via ``runtime.get_status`` and shut down via ``runtime.shutdown``
 using the JSON-RPC shape defined in ``contracts/runtime-api.md``.
 """
@@ -20,7 +20,7 @@ import asyncio
 from datetime import datetime
 from pathlib import Path
 
-from nate_ntm.api.client import JsonRpcWebSocketClient
+from nate_ntm.api.client import JsonRpcHttpClient
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
 from nate_ntm.runtime.daemon import StartupMode
 from nate_ntm.runtime.metadata_store import AgentMetadata, MetadataStore, SwarmMetadata
@@ -65,10 +65,10 @@ def _make_resume_config_and_metadata(tmp_path: Path) -> RuntimeConfig:
 
 
 def test_runtime_ws_control_api_us1_status_and_shutdown(tmp_path: Path) -> None:
-    """US1: runtime.get_status and runtime.shutdown over WebSocket JSON-RPC.
+    """US1: runtime.get_status and runtime.shutdown over HTTP JSON-RPC.
 
     This test runs a :class:`RuntimeDaemon` plus
-    :class:`JsonRpcWebSocketServer` in-process via the
+    the FastAPI-based control API in-process via the
     :mod:`nate_ntm.runtime.runner` helpers and verifies that:
 
     * ``runtime.get_status`` reports ``Running`` with correct identifiers.
@@ -80,9 +80,9 @@ def test_runtime_ws_control_api_us1_status_and_shutdown(tmp_path: Path) -> None:
         # using resume semantics.
         config = _make_resume_config_and_metadata(tmp_path)
 
-        # Use an ephemeral port for the WebSocket server to avoid clashes
+        # Use an ephemeral port for the control API server to avoid clashes
         # with other tests or local processes. The actual bound port is
-        # discovered via ``ctx.ws_server.bound_port`` after startup.
+        # discovered via ``ctx.bound_port`` after startup.
         ctx: RuntimeControlContext = create_runtime_control_context(
             config,
             StartupMode.RESUME,
@@ -94,18 +94,18 @@ def test_runtime_ws_control_api_us1_status_and_shutdown(tmp_path: Path) -> None:
         serve_task = asyncio.create_task(serve_runtime_control_api(ctx))
 
         async def _wait_for_server_port() -> int:
-            """Wait until the WebSocket server has bound to a TCP port."""
+            """Wait until the control API server has bound to a TCP port."""
 
             for _ in range(50):
-                port = ctx.ws_server.bound_port
+                port = ctx.bound_port
                 if port != 0:
                     return port
                 await asyncio.sleep(0.05)
-            raise AssertionError("WebSocket server did not bind to a port in time")
+            raise AssertionError("Control API server did not bind to a port in time")
 
         port = await _wait_for_server_port()
 
-        client = JsonRpcWebSocketClient(host="127.0.0.1", port=port, timeout=5.0)
+        client = JsonRpcHttpClient(host="127.0.0.1", port=port, timeout=5.0)
 
         async def _wait_for_running_status() -> dict[str, object]:
             last_exc: Exception | None = None
@@ -184,15 +184,15 @@ def test_runtime_ws_control_api_us1_create_with_agents_status_and_overview(tmp_p
 
         async def _wait_for_server_port() -> int:
             for _ in range(50):
-                port = ctx.ws_server.bound_port
+                port = ctx.bound_port
                 if port != 0:
                     return port
                 await asyncio.sleep(0.05)
-            raise AssertionError("WebSocket server did not bind to a port in time")
+            raise AssertionError("Control API server did not bind to a port in time")
 
         port = await _wait_for_server_port()
 
-        client = JsonRpcWebSocketClient(host="127.0.0.1", port=port, timeout=5.0)
+        client = JsonRpcHttpClient(host="127.0.0.1", port=port, timeout=5.0)
 
         async def _wait_for_running_status() -> dict[str, object]:
             last_exc: Exception | None = None

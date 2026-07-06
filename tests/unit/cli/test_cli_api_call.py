@@ -1,10 +1,10 @@
 """Unit tests for the Typer-based `api call` command (T009).
 
 These tests exercise parameter parsing and JSON-RPC invocation behavior
-for `nate_ntm.cli.api_call` without requiring a real WebSocket server.
+for `nate_ntm.cli.api_call` without requiring a real HTTP server.
 
 Network interactions are stubbed by replacing
-:class:`JsonRpcWebSocketClient` with a small fake that records calls and
+:class:`JsonRpcHttpClient` with a small fake that records calls and
 returns predefined responses.
 """
 
@@ -22,7 +22,7 @@ runner = CliRunner()
 
 
 class _FakeClient:
-    """Test double for :class:`JsonRpcWebSocketClient`.
+    """Test double for :class:`JsonRpcHttpClient`.
 
     It captures the last call and returns a configurable response
     envelope.
@@ -51,7 +51,7 @@ def test_api_call_runtime_get_status_success(monkeypatch) -> None:
     from nate_ntm import cli as cli_mod
 
     fake = _FakeClient()
-    monkeypatch.setattr(cli_mod, "JsonRpcWebSocketClient", lambda host, port: fake)
+    monkeypatch.setattr(cli_mod, "JsonRpcHttpClient", lambda host, port: fake)
 
     result = runner.invoke(app, ["api", "call", "runtime.get_status"])
 
@@ -73,7 +73,7 @@ def test_api_call_parses_params_and_surfaces_jsonrpc_errors(monkeypatch) -> None
         "error": {"code": 123, "message": "Boom"},
     }
 
-    monkeypatch.setattr(cli_mod, "JsonRpcWebSocketClient", lambda host, port: fake)
+    monkeypatch.setattr(cli_mod, "JsonRpcHttpClient", lambda host, port: fake)
 
     result = runner.invoke(
         app,
