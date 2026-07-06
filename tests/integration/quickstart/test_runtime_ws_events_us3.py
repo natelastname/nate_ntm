@@ -114,6 +114,24 @@ def test_runtime_ws_events_us3_agent_failure_publishes_events_notify(tmp_path: P
                 await asyncio.sleep(0.05)
             raise AssertionError("Control API server did not bind to a port in time")
 
+
+        async def _wait_for_subscription_attached(subscription_id: str) -> None:
+            """Wait until the /events WebSocket has been attached to ``subscription_id``.
+
+            This polls the FastAPI app's in-process subscription registry so
+            that the test can synchronize on concrete state ("subscription is
+            active") rather than on arbitrary sleep durations.
+            """
+
+            for _ in range(50):
+                subscription_map = ctx.app.state.subscription_clients
+                clients = subscription_map.get(subscription_id)
+                if clients:
+                    return
+                await asyncio.sleep(0.05)
+
+            raise AssertionError("WebSocket was not attached to subscription in time")
+
         port = await _wait_for_server_port()
 
         # Use the HTTP JSON-RPC client for command-style interactions with the
@@ -137,11 +155,10 @@ def test_runtime_ws_events_us3_agent_failure_publishes_events_notify(tmp_path: P
         async with websockets.connect(uri) as websocket:
             await websocket.send(json.dumps({"subscription_id": sub_id}))
 
-            # Give the server a brief moment to attach the WebSocket to the
-            # in-process subscription registry before we start driving the rest
-            # of the scenario. This mirrors the debug script used to validate
-            # the end-to-end wiring.
-            await asyncio.sleep(0.1)
+            # Wait until the server has attached this WebSocket to the
+            # in-process subscription registry so that subsequent events will
+            # be routed correctly.
+            await _wait_for_subscription_attached(sub_id)
 
             # 3. Wait until the daemon has fully started and the scheduler has
             # registered runtime state for the configured agent. This mirrors
@@ -166,11 +183,6 @@ def test_runtime_ws_events_us3_agent_failure_publishes_events_notify(tmp_path: P
             assert scheduler.agent_supervisor.on_agent_event is not None
 
             scheduler.mark_agent_failed("nav-1", error="boom")
-
-            # Give the event bridge a brief moment to fan out the notification
-            # before we start awaiting frames from the WebSocket client. This
-            # follows the pattern validated in the standalone debug script.
-            await asyncio.sleep(0.5)
 
             # 5. The WebSocket client should receive an ``events.notify``
             # message for the subscribed agent. Use a small timeout to avoid

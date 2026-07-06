@@ -43,6 +43,8 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi_jsonrpc import API, BaseError, Entrypoint
 
+from pydantic import BaseModel, ValidationError
+
 from .jsonrpc import JSONRPC_VERSION, build_events_notify_messages
 from .server import RuntimeApiServer
 from ..runtime.events import AgentEvent
@@ -74,6 +76,34 @@ class RuntimeStateConflictError(BaseError):
 
     CODE = 1100
     MESSAGE = "Runtime state conflict"
+
+
+class EventsHandshake(BaseModel):
+    """Typed handshake payload for the ``/events`` WebSocket endpoint.
+
+    The runtime currently supports two handshake shapes:
+
+    * ``{"subscription_id": "sub-001"}``
+    * ``{"subscription_ids": ["sub-001", "sub-002"]}``
+
+    This model captures those shapes and provides a small helper to
+    normalise them into a list of string subscription identifiers.
+    """
+
+    subscription_id: Optional[str] = None
+    subscription_ids: Optional[List[str | int]] = None
+
+    def resolved_ids(self) -> List[str]:
+        ids: List[str] = []
+
+        if self.subscription_id is not None:
+            ids.append(self.subscription_id)
+
+        if self.subscription_ids:
+            ids.extend(str(value) for value in self.subscription_ids)
+
+        return ids
+
 
 
 def _create_entrypoint(api_server: RuntimeApiServer, path: str = "/jsonrpc") -> Entrypoint:
@@ -240,18 +270,14 @@ def create_runtime_api_app(api_server: RuntimeApiServer) -> API:
                 return
 
             try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError:
-                # Invalid handshake; close with a generic protocol error.
+                handshake = EventsHandshake.model_validate_json(raw)
+            except ValidationError:
+                # Invalid handshake payload; close with a generic protocol
+                # error to signal a protocol violation to the client.
                 await websocket.close(code=1003)
                 return
 
-            sub_ids: List[str] = []
-            if isinstance(payload.get("subscription_id"), str):
-                sub_ids = [payload["subscription_id"]]
-            elif isinstance(payload.get("subscription_ids"), list):
-                raw_ids = payload["subscription_ids"]
-                sub_ids = [str(v) for v in raw_ids if isinstance(v, (str, int))]
+            sub_ids: List[str] = handshake.resolved_ids()
 
             if not sub_ids:
                 # No usable subscription identifiers provided.

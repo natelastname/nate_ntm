@@ -1,9 +1,15 @@
-"""WebSocket JSON-RPC server for the runtime control API.
+"""Legacy WebSocket JSON-RPC server for the runtime control API.
 
 This module provides a small asyncio-based WebSocket server that exposes
 :class:`RuntimeApiServer` over a localhost-only JSON-RPC 2.0 interface,
 matching the contract in
 ``specs/001-swarm-runtime-orchestrator/contracts/runtime-api.md``.
+
+The unified FastAPI/uvicorn control surface implemented in
+:mod:`nate_ntm.api.runtime_api` is the primary entrypoint used by the
+runtime runner and CLI. This module is retained as a lower-level,
+transport-specific alternative for tests and specialised tooling that
+still expect a pure WebSocket JSON-RPC endpoint.
 
 Key responsibilities:
 
@@ -16,9 +22,9 @@ Key responsibilities:
   fanned out as ``events.notify`` notifications using
   :func:`nate_ntm.api.jsonrpc.build_events_notify_messages`.
 
-Transport and lifetime management are deliberately minimal; the CLI and
-runtime daemon are expected to own this server instance and its event
-loop in future phases.
+Transport and lifetime management are deliberately minimal; callers that
+instantiate :class:`JsonRpcWebSocketServer` are expected to own this
+server instance and its event loop.
 """
 
 from __future__ import annotations

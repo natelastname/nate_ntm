@@ -1,14 +1,16 @@
 """Unit tests for :mod:`nate_ntm.runtime.runner` (US3 event streaming).
 
 These tests focus on the thin wiring that connects the runtime's
-:class:`~nate_ntm.runtime.events.AgentEvent` pipeline to the WebSocket
-JSON-RPC control API via :func:`create_runtime_control_context`.
+:class:`~nate_ntm.runtime.events.AgentEvent` pipeline to the unified
+FastAPI/JSON-RPC control API exposed by
+:func:`nate_ntm.api.runtime_api.create_runtime_api_app`.
 
 They complement the lower-level tests for :mod:`nate_ntm.api.jsonrpc`
-(``build_events_notify_messages``) and :mod:`nate_ntm.api.server`
-(``RuntimeApiServer.build_agent_event_notifications``) by ensuring that
-runtime-originated agent events are actually forwarded to the
-``JsonRpcWebSocketServer`` when a control API context is constructed.
+(``build_events_notify_messages``) and
+:mod:`nate_ntm.api.server` (``RuntimeApiServer.build_agent_event_notifications``)
+by ensuring that runtime-originated agent events are actually forwarded
+to the FastAPI application's ``state.publish_event`` coroutine when a
+control API context is constructed.
 """
 
 from __future__ import annotations
@@ -16,9 +18,10 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from nate_ntm.api.jsonrpc_ws import JsonRpcWebSocketServer
 from nate_ntm.config.runtime_config import load_runtime_config
 from nate_ntm.runtime.daemon import StartupMode
+from nate_ntm.runtime import runner as runner_mod
+
 from nate_ntm.runtime.events import AgentEvent, AgentEventSource
 from nate_ntm.runtime.runner import create_runtime_control_context
 from nate_ntm.runtime.state import AgentRuntimeState, AgentStatus
@@ -30,15 +33,15 @@ def _make_project(tmp_path: Path) -> Path:
     return project
 
 
-def test_create_runtime_control_context_wires_agent_events_to_ws_server(tmp_path: Path) -> None:
-    """AgentSupervisor events are bridged to JsonRpcWebSocketServer.publish_event.
+def test_create_runtime_control_context_wires_agent_events_to_app_publish_event(tmp_path: Path) -> None:
+    """AgentSupervisor events are bridged to the app's ``publish_event``.
 
     The ``create_runtime_control_context`` helper is responsible for wiring
-    the runtime daemon, in-process API server, and WebSocket JSON-RPC server
-    together. As part of US3, it also installs a small bridge from the
-    :class:`~nate_ntm.runtime.agents.AgentSupervisor`'s
-    ``on_agent_event`` callback to
-    :meth:`~nate_ntm.api.jsonrpc_ws.JsonRpcWebSocketServer.publish_event`.
+    the runtime daemon, in-process API server, and unified FastAPI/JSON-RPC
+    application together. As part of US3, it also installs a small bridge
+    from the :class:`~nate_ntm.runtime.agents.AgentSupervisor`'s
+    ``on_agent_event`` callback to the FastAPI app's
+    :pydata:`state.publish_event` coroutine.
 
     This test verifies that when a runtime-originated agent event is
     appended via :meth:`AgentSupervisor.mark_agent_failed`, the bridged
@@ -50,23 +53,28 @@ def test_create_runtime_control_context_wires_agent_events_to_ws_server(tmp_path
         project = _make_project(tmp_path)
         config = load_runtime_config(project_path=project)
 
-        # Monkeypatch ``publish_event`` on the WebSocket server *class* to
-        # capture events instead of attempting real network IO. We patch at
-        # the class level because :class:`JsonRpcWebSocketServer` uses
-        # ``slots=True`` and does not allow rebinding instance attributes.
         seen: list[AgentEvent] = []
 
-        original_publish = JsonRpcWebSocketServer.publish_event
+        # Patch ``create_runtime_api_app`` used by the runner so that the
+        # FastAPI app it creates records events passed into
+        # ``app.state.publish_event`` instead of attempting real network IO.
+        original_create_app = runner_mod.create_runtime_api_app  # type: ignore[attr-defined]
 
-        async def fake_publish(self: JsonRpcWebSocketServer, event: AgentEvent) -> None:  # type: ignore[override]
-            seen.append(event)
+        def _create_app_with_spy(api_server):  # type: ignore[no-untyped-def]
+            app = original_create_app(api_server)
 
-        JsonRpcWebSocketServer.publish_event = fake_publish  # type: ignore[assignment]
+            async def fake_publish(event: AgentEvent) -> None:
+                seen.append(event)
+
+            app.state.publish_event = fake_publish  # type: ignore[assignment]
+            return app
+
+        runner_mod.create_runtime_api_app = _create_app_with_spy  # type: ignore[assignment]
 
         try:
             # Construct a runtime control context in ``create`` mode. This builds
-            # a fresh RuntimeDaemon, RuntimeApiServer, and JsonRpcWebSocketServer,
-            # and installs the AgentEvent bridge.
+            # a fresh RuntimeDaemon, RuntimeApiServer, and FastAPI app, and
+            # installs the AgentEvent bridge.
             ctx = create_runtime_control_context(
                 config,
                 StartupMode.CREATE,
@@ -84,7 +92,7 @@ def test_create_runtime_control_context_wires_agent_events_to_ws_server(tmp_path
 
             # Attach minimal runtime state for a single agent. We bypass
             # metadata-backed registration here because the goal is to exercise
-            # the event pipeline from AgentSupervisor -> bridge -> ws_server.
+            # the event pipeline from AgentSupervisor -> bridge -> FastAPI app.
             runtime_state = AgentRuntimeState(
                 agent_id="agent-1",
                 status=AgentStatus.RUNNING,
@@ -108,36 +116,43 @@ def test_create_runtime_control_context_wires_agent_events_to_ws_server(tmp_path
             assert event.agent_id == "agent-1"
             assert event.type == "AgentFailed"
         finally:
-            # Restore the original ``publish_event`` implementation so this
-            # test does not affect other tests.
-            JsonRpcWebSocketServer.publish_event = original_publish  # type: ignore[assignment]
+            # Restore the original ``create_runtime_api_app`` implementation so
+            # this test does not affect other tests.
+            runner_mod.create_runtime_api_app = original_create_app  # type: ignore[assignment]
 
     asyncio.run(main())
 
 
 
-def test_create_runtime_control_context_bridges_acp_events_to_ws_server(tmp_path: Path) -> None:
-    """ACP adapter events are bridged to JsonRpcWebSocketServer.publish_event.
+def test_create_runtime_control_context_bridges_acp_events_to_app_publish_event(tmp_path: Path) -> None:
+    """ACP adapter events are bridged to the app's ``publish_event``.
 
     This exercises the wiring from BaseAcpClient.on_event ->
     AgentSupervisor.append_agent_event -> AgentSupervisor.on_agent_event ->
-    JsonRpcWebSocketServer.publish_event using the dev-mode FakeAcpClient.
+    the FastAPI app's :pydata:`state.publish_event` coroutine using the
+    dev-mode FakeAcpClient.
     """
 
     async def main() -> None:
         project = _make_project(tmp_path)
         config = load_runtime_config(project_path=project)
 
-        # Patch JsonRpcWebSocketServer.publish_event at the class level to
-        # capture events instead of attempting real network IO.
         seen: list[AgentEvent] = []
 
-        original_publish = JsonRpcWebSocketServer.publish_event
+        # Patch ``create_runtime_api_app`` so that the FastAPI app used by the
+        # runner records events passed into ``app.state.publish_event``.
+        original_create_app = runner_mod.create_runtime_api_app  # type: ignore[attr-defined]
 
-        async def fake_publish(self: JsonRpcWebSocketServer, event: AgentEvent) -> None:  # type: ignore[override]
-            seen.append(event)
+        def _create_app_with_spy(api_server):  # type: ignore[no-untyped-def]
+            app = original_create_app(api_server)
 
-        JsonRpcWebSocketServer.publish_event = fake_publish  # type: ignore[assignment]
+            async def fake_publish(event: AgentEvent) -> None:
+                seen.append(event)
+
+            app.state.publish_event = fake_publish  # type: ignore[assignment]
+            return app
+
+        runner_mod.create_runtime_api_app = _create_app_with_spy  # type: ignore[assignment]
 
         try:
             ctx = create_runtime_control_context(
@@ -151,8 +166,8 @@ def test_create_runtime_control_context_bridges_acp_events_to_ws_server(tmp_path
             assert scheduler is not None
             supervisor = scheduler.agent_supervisor
 
-            # The bridge from AgentSupervisor.on_agent_event to
-            # JsonRpcWebSocketServer.publish_event should be installed.
+            # The bridge from AgentSupervisor.on_agent_event to the FastAPI
+            # app's ``publish_event`` should be installed.
             assert supervisor.on_agent_event is not None
 
             # Seed minimal runtime state for the agent that FakeAcpClient
@@ -174,7 +189,8 @@ def test_create_runtime_control_context_bridges_acp_events_to_ws_server(tmp_path
             # Trigger an ACP turn, which will cause FakeAcpClient to emit an
             # AgentEvent via its on_event callback. The daemon wiring routes
             # this into AgentSupervisor.append_agent_event and on_agent_event,
-            # which in turn should schedule publish_event on the ws server.
+            # which in turn should schedule ``publish_event`` on the FastAPI
+            # app.
             conv = acp.ensure_conversation("agent-1")
             assert conv
             turn_id = acp.start_turn("agent-1", prompt="hello over ws")
@@ -193,7 +209,7 @@ def test_create_runtime_control_context_bridges_acp_events_to_ws_server(tmp_path
             assert event.payload["turn_id"] == turn_id
             assert event.payload["conversation_id"] == conv
         finally:
-            JsonRpcWebSocketServer.publish_event = original_publish  # type: ignore[assignment]
+            runner_mod.create_runtime_api_app = original_create_app  # type: ignore[assignment]
 
     asyncio.run(main())
 
