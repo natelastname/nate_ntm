@@ -8,5 +8,6 @@ presents a high-level summary of runtime and swarm state backed by the shared
 """
 
 from .overview import OverviewScreen
+from .agent_inspect import AgentInspectScreen
 
-__all__ = ["OverviewScreen"]
+__all__ = ["OverviewScreen", "AgentInspectScreen"]

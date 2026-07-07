@@ -8,10 +8,7 @@ registered and that invoking ``--help`` works without importing runtime
 internals directly.
 """
 
-import pytest
 from typer.testing import CliRunner
-
-pytest.importorskip("textual")
 
 from nate_ntm.cli import app as cli_app
 

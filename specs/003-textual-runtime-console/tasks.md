@@ -32,12 +32,12 @@ description: "Implementation tasks for Feature 003: Textual Runtime Console"
 
 **Purpose**: Establish the TUI package skeleton, CLI entrypoint, and test layout without yet connecting to a real runtime.
 
-- [ ] T300 Create console package skeleton and CLI entrypoint.
+- [x] T300 Create console package skeleton and CLI entrypoint.
   - Add `src/nate_ntm/tui/__init__.py`, `src/nate_ntm/tui/app.py`, `src/nate_ntm/tui/screens/__init__.py`, and `src/nate_ntm/tui/widgets/__init__.py`.
   - Add `src/nate_ntm/cli/console.py` (or extend the existing CLI module if more appropriate) with a `nate-ntm console` command that launches a stub Textual app from `nate_ntm.tui.app:ConsoleApp`.
   - Update `pyproject.toml` `[project.scripts]` (or equivalent) so that the console command is available via the `nate-ntm` entrypoint.
 
-- [ ] T301 [P] Add basic TUI test scaffolding.
+- [x] T301 [P] Add basic TUI test scaffolding.
   - Create `tests/tui/unit/__init__.py` and `tests/tui/integration/__init__.py`.
   - Add placeholder tests `tests/tui/unit/test_app_skeleton.py` and `tests/tui/integration/test_console_entrypoint.py` that import `ConsoleApp` and the CLI entrypoint to verify they can be instantiated without contacting a runtime.
 
@@ -85,19 +85,19 @@ description: "Implementation tasks for Feature 003: Textual Runtime Console"
 
 **Goal**: Provide a default overview screen that summarizes swarm health, powered entirely by `RuntimeSession`.
 
-- [ ] T320 Implement the default overview screen.
+- [x] T320 Implement the default overview screen.
   - In `src/nate_ntm/tui/screens/overview.py`, implement an `OverviewScreen` (Textual `Screen` or `ModalScreen`) that:
-    - Connects to a provided `RuntimeSession` on mount/startup.
+    - Uses a provided, already-connected `RuntimeSession` supplied by the application.
     - Renders overall swarm health, agent counts by state, and recent activity in a compact layout.
-    - Reacts to `RuntimeSession` state-change notifications to update without manual refresh.
+    - Reacts to `RuntimeSession` state-change notifications (e.g., via `wait_for_update`) to update without manual refresh.
 
-- [ ] T321 [P] Implement basic swarm summary and agent list widgets.
+- [x] T321 [P] Implement basic swarm summary and agent list widgets.
   - In `src/nate_ntm/tui/widgets/swarm_summary.py`, implement a widget that renders aggregate swarm metrics from `RuntimeSession`'s cached overview data.
   - In `src/nate_ntm/tui/widgets/agent_table.py`, implement a widget that lists agents with their latest-known state and supports keyboard selection.
 
-- [ ] T322 [P] Wire `ConsoleApp` to use `OverviewScreen` by default.
+- [x] T322 [P] Wire `ConsoleApp` to use `OverviewScreen` by default.
   - In `src/nate_ntm/tui/app.py`, implement `ConsoleApp` as a Textual `App` subclass that:
-    - Accepts runtime connection parameters (via CLI or environment) and constructs a single `RuntimeSession`.
+    - Accepts a pre-constructed :class:`RuntimeSession` from the caller (typically the Typer CLI entrypoint).
     - Sets `OverviewScreen` as the initial screen and passes the shared `RuntimeSession` into it.
 
 - [ ] T323 Add tests for overview behavior.

@@ -7,10 +7,6 @@ verify that the main application and default screen can be imported and
 instantiated without pulling in runtime internals or transport details.
 """
 
-import pytest
-
-pytest.importorskip("textual")
-
 from nate_ntm.tui.app import ConsoleApp
 from nate_ntm.tui.screens import OverviewScreen
 from nate_ntm.tui.runtime_session import RuntimeSession
@@ -30,9 +26,10 @@ class _DummyClient:
 
 
 def test_console_app_instantiation() -> None:
-    """ConsoleApp can be constructed with host/port parameters."""
+    """ConsoleApp can be constructed around an existing RuntimeSession."""
 
-    app = ConsoleApp(host="127.0.0.1", port=9999)
+    session = RuntimeSession(client=_DummyClient())  # type: ignore[arg-type]
+    app = ConsoleApp(session=session)
     assert isinstance(app, ConsoleApp)
 
 

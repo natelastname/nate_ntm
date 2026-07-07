@@ -3,32 +3,32 @@ from __future__ import annotations
 """Textual application shell for the nate_ntm runtime console.
 
 This module defines :class:`ConsoleApp`, a thin Textual :class:`~textual.app.App`
-subclass that owns exactly one :class:`~nate_ntm.tui.runtime_session.RuntimeSession`
-instance for the lifetime of the process.
+subclass that uses a single shared
+:class:`~nate_ntm.tui.runtime_session.RuntimeSession` instance provided by the
+caller.
 
 Layering
 ========
 
 The app is responsible for:
 
-* Constructing a :class:`~nate_ntm.api.runtime_client.RuntimeClient` based on
-  CLI-provided host/port parameters.
-* Constructing a :class:`RuntimeSession` around that client.
-* Calling :meth:`RuntimeSession.connect` during startup and
-  :meth:`RuntimeSession.disconnect` during shutdown.
+* Accepting a single shared :class:`RuntimeSession` instance supplied by the
+  caller.
 * Pushing the default :class:`OverviewScreen` as the initial screen.
+
+The lifecycle of :class:`RuntimeSession` (``connect`` / ``disconnect``)
+is owned by the CLI/entrypoint layer, not by the Textual application.
 
 Textual screens and widgets **do not** talk to the runtime or transports
 directly; they observe a shared :class:`RuntimeSession` owned by this app.
+The construction of :class:`RuntimeClient` and :class:`RuntimeSession` lives
+outside the Textual layer (for example, in the Typer CLI entrypoint).
 """
 
-import asyncio
 from typing import Any
 
 from textual.app import App, ComposeResult
-from textual.events import Shutdown
 
-from nate_ntm.api.runtime_client import RuntimeClient
 from nate_ntm.tui.runtime_session import RuntimeSession
 from nate_ntm.tui.screens.overview import OverviewScreen
 
@@ -36,65 +36,36 @@ from nate_ntm.tui.screens.overview import OverviewScreen
 class ConsoleApp(App[None]):
     """Textual runtime console application.
 
-    The app owns a single :class:`RuntimeSession` instance, which in turn owns
-    the underlying :class:`RuntimeClient`. All screens obtain runtime state via
-    that shared session and must not create additional protocol clients.
+    The app is constructed around a single shared :class:`RuntimeSession`
+    instance provided by the caller. All screens obtain runtime state via that
+    shared session and must not create additional protocol clients.
     """
 
     TITLE = "nate_ntm Runtime Console"
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8765, **kwargs: Any) -> None:
+    def __init__(self, session: RuntimeSession, **kwargs: Any) -> None:
         """Construct a new console app.
 
         Parameters
         ----------
-        host:
-            Runtime control API host. This is typically the same host where the
-            runtime daemon is running.
-
-        port:
-            Runtime control API TCP port. By default this matches the control
-            API defaults used elsewhere in the project.
+        session:
+            The shared :class:`RuntimeSession` used by all screens and widgets.
+            The session should be created, configured, and connected by the
+            caller (typically the Typer CLI entrypoint); the app does not
+            manage the session lifecycle.
         """
 
         super().__init__(**kwargs)
-        self._client = RuntimeClient(host=host, port=port)
-        self.session = RuntimeSession(client=self._client)
-        self._connected: bool = False
+        self.session = session
 
     async def on_mount(self) -> None:  # pragma: no cover - exercised via Textual runtime
-        """Connect the runtime session and push the overview screen.
+        """Push the overview screen once the app is mounted.
 
-        For the initial implementation we keep error handling simple: if the
-        session fails to connect, the app logs the error and exits.
+        The :class:`RuntimeSession` is expected to be already connected by the
+        caller (for example, the Typer CLI entrypoint).
         """
 
-        try:
-            await self.session.connect()
-        except Exception as exc:  # pragma: no cover - defensive
-            # In a later polish phase we will surface this in a dedicated
-            # connection error screen. For now, log and exit non-interactively.
-            self.log(f"Failed to connect to runtime: {exc}")
-            self.exit(message=f"Failed to connect to runtime: {exc}")
-            return
-
-        self._connected = True
         await self.push_screen(OverviewScreen(self.session))
-
-    async def on_shutdown(self, event: Shutdown) -> None:  # pragma: no cover - Textual runtime hook
-        """Ensure the runtime session is disconnected on application shutdown."""
-
-        if self._connected:
-            # Best-effort disconnect; swallow cancellation so shutdown can
-            # proceed even if the runtime is already gone.
-            try:
-                await self.session.disconnect()
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:  # pragma: no cover - defensive
-                self.log(f"Error while disconnecting session: {exc}")
-            finally:
-                self._connected = False
 
     def compose(self) -> ComposeResult:  # pragma: no cover - UI composition
         """Compose the root view.

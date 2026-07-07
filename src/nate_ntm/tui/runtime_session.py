@@ -93,6 +93,8 @@ class RuntimeSession:
     swarm_overview: Optional[SwarmOverviewResult] = field(default=None, init=False)
     agent_details: Dict[str, AgentDetailResult] = field(default_factory=dict, init=False)
     event_buffer: Deque[AgentDetailEvent] = field(init=False, repr=False)
+    # Currently selected agent (if any), shared across UI components.
+    selected_agent_id: Optional[str] = field(default=None, init=False)
 
     # Degraded state flags ---------------------------------------------------------
     control_degraded: bool = field(default=False, init=False)
@@ -141,6 +143,24 @@ class RuntimeSession:
         """
 
         return self._update_seq
+
+    def select_agent(self, agent_id: Optional[str]) -> None:
+        """Record the currently selected agent identifier.
+
+        The selection is shared across all UI components that consume this
+        session so that, for example, overview and detail screens can agree on
+        which agent is "current".
+
+        Passing ``None`` clears the selection. When the selection changes, the
+        session's update sequence is incremented so that observers waiting via
+        :meth:`wait_for_update` are notified.
+        """
+
+        if agent_id == self.selected_agent_id:
+            return
+
+        self.selected_agent_id = agent_id
+        self._notify_updated()
 
     def _notify_updated(self) -> None:
         """Increment the update sequence and wake any waiters."""
@@ -224,6 +244,7 @@ class RuntimeSession:
         self.swarm_overview = None
         self.agent_details.clear()
         self.event_buffer.clear()
+        self.selected_agent_id = None
 
         self.control_degraded = False
         self.control_error = None

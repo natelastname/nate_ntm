@@ -314,16 +314,39 @@ def console(
     """Launch the Textual runtime console.
 
     This command starts the Textual-based monitoring console connected to a
-    single runtime instance. The console owns exactly one RuntimeSession and
-    shares it across all screens and widgets.
+    single runtime instance. The console uses one shared :class:`RuntimeSession`
+    provided by this entrypoint and shares it across all screens and widgets.
     """
 
     # Import locally so that Textual and TUI dependencies are only loaded when
     # the console command is actually invoked.
+    from .api.runtime_client import RuntimeClient
     from .tui.app import ConsoleApp
+    from .tui.runtime_session import RuntimeSession
 
-    console_app = ConsoleApp(host=host, port=port)
-    console_app.run()
+    async def _run_console() -> None:
+        client = RuntimeClient(host=host, port=port)
+        session = RuntimeSession(client=client)
+        try:
+            await session.connect()
+        except Exception as exc:
+            # Surface connection failures as a clean, non-zero exit code rather
+            # than starting Textual and then failing immediately.
+            typer.echo(f"Failed to connect to runtime at {host}:{port}: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+
+        app_instance = ConsoleApp(session=session)
+        try:
+            await app_instance.run_async()
+        finally:
+            # Best-effort disconnect; errors here should not mask the original
+            # reason for application shutdown.
+            try:
+                await session.disconnect()
+            except Exception:
+                pass
+
+    asyncio.run(_run_console())
 
 
 def cli() -> None:

@@ -263,16 +263,49 @@ def test_wait_for_update_signals_on_state_change() -> None:
         await session.connect()
 
         # Capture the initial update sequence and then wait for a newer one
-        # after an event arrives.
+        # after any background task reports an update.
         initial_seq = session.update_seq
 
         new_seq = await session.wait_for_update(last_seen=initial_seq, timeout=1.0)
         assert new_seq > initial_seq
+
+        # Give the background event consumer a brief window to process the
+        # configured event; we only care that the wait_for_update() mechanism
+        # wakes on *some* change, not which task produced it first.
+        await asyncio.sleep(0.05)
         assert session.get_recent_events() == [event]
 
         await session.disconnect()
 
     asyncio.run(main())
+
+
+def test_select_agent_updates_shared_selection_and_sequence() -> None:
+    """select_agent() should update selection and bump the update sequence.
+
+    The selection is a lightweight piece of shared UI state; it should not
+    require the session to be connected in order to function.
+    """
+
+    fake = _FakeRuntimeClient()
+    session = RuntimeSession(client=fake)
+
+    assert session.selected_agent_id is None
+    initial_seq = session.update_seq
+
+    session.select_agent("agent-1")
+    assert session.selected_agent_id == "agent-1"
+    assert session.update_seq == initial_seq + 1
+
+    # Selecting the same agent again should be a no-op for the sequence.
+    session.select_agent("agent-1")
+    assert session.update_seq == initial_seq + 1
+
+    # Changing the selection should bump the sequence again.
+    session.select_agent("agent-2")
+    assert session.selected_agent_id == "agent-2"
+    assert session.update_seq == initial_seq + 2
+
 
 
 def test_disconnect_cancels_tasks_and_closes_event_iterator(monkeypatch: pytest.MonkeyPatch) -> None:

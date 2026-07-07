@@ -29,6 +29,7 @@ from textual.widgets import Footer, Header, Static
 
 from nate_ntm.tui.runtime_session import RuntimeSession
 from nate_ntm.tui.widgets import AgentTable, EventView, SwarmSummary
+from nate_ntm.tui.screens.agent_inspect import AgentInspectScreen
 
 
 class AgentDetailPanel(Static):
@@ -75,6 +76,7 @@ class OverviewScreen(Screen):
 
     BINDINGS = [
         ("q", "quit", "Quit"),
+        ("enter", "inspect_agent", "Inspect selected agent"),
     ]
 
     def __init__(self, session: RuntimeSession, **kwargs: Any) -> None:
@@ -133,6 +135,20 @@ class OverviewScreen(Screen):
             # Trigger a re-render so dependent widgets can pick up the new
             # cached state from the session.
             self.refresh()
+
+    def action_inspect_agent(self) -> None:
+        """Open the agent inspection screen for the currently selected agent.
+
+        The currently selected agent identifier is obtained from the shared
+        :class:`RuntimeSession` via :attr:`RuntimeSession.selected_agent_id`.
+        If no agent is selected, the action is a no-op.
+        """
+
+        agent_id = self._session.selected_agent_id
+        if not agent_id:
+            return
+
+        self.app.push_screen(AgentInspectScreen(self._session))
 
     def action_quit(self) -> None:
         """Quit the application."""
