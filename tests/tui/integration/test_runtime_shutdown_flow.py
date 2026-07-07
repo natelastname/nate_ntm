@@ -163,7 +163,7 @@ async def test_overview_shutdown_flow_requests_runtime_shutdown_and_exits() -> N
         confirm_screen = pilot.app.screen
         assert isinstance(confirm_screen, RuntimeShutdownConfirmScreen)
         body = confirm_screen.query_one("#runtime-shutdown-confirm", Static)
-        body_text = body.render()
+        body_text = str(body.render())
         assert "Runtime shutdown" in body_text
 
         # Confirm shutdown.

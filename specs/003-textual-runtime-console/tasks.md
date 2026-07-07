@@ -171,9 +171,9 @@ description: "Implementation tasks for Feature 003: Textual Runtime Console"
 - [x] T351 [P] Add keyboard help and discoverability.
   - In `src/nate_ntm/tui/screens/overview.py`, expand the ``BINDINGS`` list so that Textual's :class:`Footer` can surface navigation and core actions (quit, inspect agent, shutdown runtime) as on-screen key help.
 
-- [ ] T352 [P] Align requirements checklist and docs.
+- [x] T352 [P] Align requirements checklist and docs.
   - Update `specs/003-textual-runtime-console/checklists/requirements.md` to reference the concrete implementation elements (files, tests) introduced in this tasks file.
-  - Add or update any quickstart/usage documentation for the console under `specs/003-textual-runtime-console/` or top-level docs as appropriate.
+  - Add a short console quickstart/usage note under `specs/003-textual-runtime-console/quickstart.md` describing how to start a runtime with the control API, launch the console via `uv run nate-ntm console`, and use the core keyboard actions (quit, inspect agent, shutdown runtime).
 
 ---
 
