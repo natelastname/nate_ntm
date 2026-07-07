@@ -338,6 +338,28 @@ class RuntimeSession:
         # to ``list`` first for simplicity at this small scale.
         return list(self.event_buffer)[-limit:]
 
+
+    async def shutdown_runtime(self, timeout_seconds: int = 30) -> Mapping[str, Any]:
+        """Request a graceful shutdown of the connected runtime.
+
+        This forwards to :meth:`RuntimeClient.shutdown_runtime` and records a
+        control-plane degradation so that UI components can reflect that the
+        runtime is in the process of shutting down.
+
+        The method does not implicitly disconnect the session; callers are
+        expected to invoke :meth:`disconnect` when appropriate.
+        """
+
+        result = await self.client.shutdown_runtime(timeout_seconds=timeout_seconds)
+        # Mark the control plane as degraded but keep the last-known
+        # snapshots so that the UI can display a final view while the
+        # runtime exits.
+        self.control_degraded = True
+        if not self.control_error:
+            self.control_error = "runtime shutdown requested"
+        self._notify_updated()
+        return result
+
     async def get_agent_detail(self, agent_id: str, max_events: int = 100, *, force_refresh: bool = False) -> AgentDetailResult:
         """Return detailed information for a single agent.
 

@@ -105,6 +105,22 @@ def _make_session_with_cached_state() -> RuntimeSession:
     return session
 
 
+
+def test_overview_screen_bindings_expose_core_actions() -> None:
+    """OverviewScreen exposes core keyboard actions via BINDINGS.
+
+    Textual's :class:`Footer` widget uses these bindings to render on-screen
+    help, satisfying the spec requirement for discoverable navigation and
+    shutdown actions without adding a separate help screen.
+    """
+
+    bindings = {key: (action, desc) for key, action, desc in OverviewScreen.BINDINGS}
+
+    assert bindings["q"][0] == "quit"
+    assert bindings["enter"][0] == "inspect_agent"
+    assert bindings["x"][0] == "shutdown_runtime"
+
+
 def test_swarm_summary_renders_runtime_and_swarm_info() -> None:
     """SwarmSummary includes high-level runtime, swarm, and degraded info."""
 
@@ -129,6 +145,12 @@ def test_swarm_summary_renders_runtime_and_swarm_info() -> None:
     # Degraded flags should be surfaced inline.
     assert "[control degraded: control failure]" in text
     assert "[events degraded: events failure]" in text
+
+
+    # Connection status is derived from the session's ``is_connected`` flag.
+    # In this cached-only helper the session has never been connected, so
+    # SwarmSummary should report a disconnected console.
+    assert "Connection: disconnected" in text
 
 
 def test_agent_table_renders_agents_from_swarm_overview() -> None:
@@ -225,7 +247,8 @@ def test_event_view_renders_recent_events() -> None:
 
     text = widget.render()
 
-    assert "Events (most recent first):" in text
+    # EventView should reflect ordering and degraded state in its header.
+    assert "Events (most recent last; events degraded; control degraded):" in text
     # Our test event is for nav-1; the exact timestamp and event-type fields
     # are intentionally loosely formatted in the widget.
     assert "agent=nav-1" in text

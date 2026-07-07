@@ -51,6 +51,10 @@ class _FakeRuntimeClient:
         except KeyError:  # pragma: no cover - defensive
             raise RuntimeError(f"no detail configured for {agent_id!r}")
 
+    async def shutdown_runtime(self, timeout_seconds: int = 30) -> Mapping[str, Any]:
+        self.calls.append(("runtime.shutdown", {"timeout_seconds": timeout_seconds}))
+        return {"ok": True}
+
     # Event-stream helper -------------------------------------------------------
 
     def iter_events(
@@ -307,6 +311,34 @@ def test_select_agent_updates_shared_selection_and_sequence() -> None:
     assert session.update_seq == initial_seq + 2
 
 
+def test_shutdown_runtime_delegates_to_client_and_marks_degraded() -> None:
+    """shutdown_runtime() should call the client and mark control degraded.
+
+    This exercises the session-level helper that fronts ``RuntimeClient``'s
+    ``shutdown_runtime`` method and ensures that the resulting degraded state
+    is visible to UI consumers (for example, SwarmSummary).
+    """
+
+    async def main() -> None:
+        fake = _FakeRuntimeClient()
+        session = RuntimeSession(client=fake)
+
+        assert session.control_degraded is False
+        assert session.control_error is None
+
+        result = await session.shutdown_runtime(timeout_seconds=42)
+
+        # The fake client should record the shutdown call with the timeout.
+        assert ("runtime.shutdown", {"timeout_seconds": 42}) in fake.calls
+        assert result == {"ok": True}
+
+        # The session should now reflect a degraded control-plane state.
+        assert session.control_degraded is True
+        assert "shutdown" in (session.control_error or "")
+
+    asyncio.run(main())
+
+
 
 def test_disconnect_cancels_tasks_and_closes_event_iterator(monkeypatch: pytest.MonkeyPatch) -> None:
     """disconnect() should cancel tasks and close the event iterator."""
@@ -402,3 +434,62 @@ def test_control_and_event_degraded_flags_are_tracked_separately(monkeypatch: py
         await session.disconnect()
 
     asyncio.run(main())
+
+
+def test_event_buffer_is_bounded_by_event_buffer_size() -> None:
+    """Recent events should be bounded by the configured buffer size.
+
+    When more events are produced than the buffer size, ``get_recent_events``
+    should only return the most recent ``event_buffer_size`` entries in
+    chronological order (oldest first, newest last).
+    """
+
+    async def main() -> None:
+        status, overview, detail, event_template = _make_sample_models()
+
+        fake = _FakeRuntimeClient()
+        fake._status = status
+        fake._overview = overview
+
+        # Construct a sequence of EventsNotify instances longer than the
+        # configured event buffer size.
+        events: list[EventsNotify] = []
+        for idx in range(1, 11):
+            evt = AgentDetailEvent.model_validate(
+                {
+                    "event_id": f"evt-{idx}",
+                    "timestamp": f"2026-07-07T12:00:{idx:02d}Z",
+                    "agent_id": "agent-1",
+                    "source": "runtime",
+                    "type": "tick",
+                    "payload": {"seq": idx},
+                }
+            )
+            events.append(EventsNotify(subscription_id="sub-1", event=evt))
+
+        fake._events = events
+
+        # Use a small buffer to make the behaviour easy to assert.
+        session = RuntimeSession(client=fake, poll_interval=0.01, event_buffer_size=5)
+
+        await session.connect()
+
+        # Allow the background event consumer to process all events.
+        await asyncio.sleep(0.1)
+
+        recent = session.get_recent_events()
+        assert len(recent) == 5
+
+        # We expect to keep only the last five events in chronological order.
+        assert [e.event_id for e in recent] == [
+            "evt-6",
+            "evt-7",
+            "evt-8",
+            "evt-9",
+            "evt-10",
+        ]
+
+        await session.disconnect()
+
+    asyncio.run(main())
+

@@ -42,6 +42,14 @@ class SwarmSummary(Static):
 
         lines: list[str] = []
 
+        # Connection state is derived purely from the RuntimeSession so that
+        # operators can distinguish between a disconnected console and a
+        # connected-but-degraded runtime.
+        if session.is_connected:
+            lines.append("Connection: connected")
+        else:
+            lines.append("Connection: disconnected")
+
         if status is None or overview is None:
             lines.append("Runtime: connecting…")
         else:

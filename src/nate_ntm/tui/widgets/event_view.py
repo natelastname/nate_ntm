@@ -17,7 +17,13 @@ from nate_ntm.tui.runtime_session import RuntimeSession
 
 
 class EventView(Static):
-    """Render a small, bounded list of recent runtime/agent events."""
+    """Render a small, bounded list of recent runtime/agent events.
+
+    The widget reads exclusively from a shared :class:`RuntimeSession` instance
+    and does not perform any protocol or transport work directly. It presents a
+    small window of the most recent events together with basic degradation
+    indicators derived from :class:`RuntimeSession`'s flags.
+    """
 
     def __init__(self, session: RuntimeSession, limit: int = 50, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -30,23 +36,50 @@ class EventView(Static):
 
         return self._session
 
-    def render(self) -> str:  # pragma: no cover - exercised through Textual rendering
-        events = self._session.get_recent_events(limit=self._limit)
+    def render(self) -> str:
+        """Render a textual view of recent events.
+
+        The output includes a header that reflects both the ordering
+        ("most recent last") and any degraded state indicated by the
+        session's control and event-stream flags.
+        """
+
+        session = self._session
+        events = session.get_recent_events(limit=self._limit)
+
+        # Build a header that always documents the ordering and optionally
+        # appends degradation information.
+        status_fragments: list[str] = ["most recent last"]
+        if session.events_degraded:
+            status_fragments.append("events degraded")
+        if session.control_degraded:
+            status_fragments.append("control degraded")
+
+        header = f"Events ({'; '.join(status_fragments)}):"
+        lines: list[str] = [header]
+
+        # Surface any available degradation messages so operators can see
+        # that the event view may be incomplete.
+        if session.events_degraded and session.events_error:
+            lines.append(f"  ! events: {session.events_error}")
+        if session.control_degraded and session.control_error:
+            lines.append(f"  ! control: {session.control_error}")
 
         if not events:
-            return "Events: (none yet)"
-
-        lines: list[str] = ["Events (most recent first):"]
+            lines.append("  (none yet)")
+            return "\n".join(lines)
 
         for event in events:
-            # The AgentDetailEvent model exposes agent_id, event_type, and
-            # created_at (timestamp) fields among others.
-            created = getattr(event, "created_at", None)
-            created_str = created.isoformat() if created is not None else "?"
+            # AgentDetailEvent exposes timestamp, agent_id, source, and type.
+            timestamp = getattr(event, "timestamp", None)
+            timestamp_str = (
+                timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp or "?")
+            )
             agent_id = getattr(event, "agent_id", "-")
-            event_type = getattr(event, "event_type", "-")
+            source = getattr(event, "source", "-")
+            event_type = getattr(event, "type", "-")
             lines.append(
-                f"  - {created_str}  agent={agent_id}  type={event_type}"
+                f"  - {timestamp_str}  agent={agent_id}  type={event_type}  source={source}"
             )
 
         return "\n".join(lines)

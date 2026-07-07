@@ -32,6 +32,69 @@ from nate_ntm.tui.widgets import AgentTable, EventView, SwarmSummary
 from nate_ntm.tui.screens.agent_inspect import AgentInspectScreen
 
 
+
+
+class RuntimeShutdownConfirmScreen(Screen):
+    """Confirmation screen for requesting a graceful runtime shutdown.
+
+    This small helper screen exists solely to implement FR-009: the console
+    must provide a clear, confirmed way to request a runtime shutdown from
+    within the UI. It relies only on :class:`RuntimeSession` and does not
+    talk to the runtime client or JSON-RPC directly.
+    """
+
+    BINDINGS = [
+        ("y", "confirm_shutdown", "Confirm shutdown"),
+        ("n", "cancel", "Cancel"),
+        ("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, session: RuntimeSession, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._session = session
+
+    @property
+    def session(self) -> RuntimeSession:
+        return self._session
+
+    def compose(self) -> ComposeResult:  # pragma: no cover - UI composition
+        yield Header(show_clock=False)
+        yield Static(
+            "Runtime shutdown\n\n"
+            "You are about to request a graceful shutdown of the\n"
+            "connected nate_ntm runtime.\n\n"
+            "Press 'y' to confirm, or 'n' / Esc to cancel.",
+            id="runtime-shutdown-confirm",
+        )
+        yield Footer()
+
+    def action_cancel(self) -> None:
+        """Cancel shutdown and return to the previous screen."""
+
+        self.app.pop_screen()
+
+    def action_confirm_shutdown(self) -> None:
+        """Start the async shutdown-and-exit flow.
+
+        The actual shutdown is performed in a background task so that the
+        UI remains responsive while the RPC completes.
+        """
+
+        asyncio.create_task(self._run_shutdown())
+
+    async def _run_shutdown(self) -> None:
+        try:
+            await self._session.shutdown_runtime()
+        except Exception:
+            # The session already records degraded control state; keep
+            # additional UI error handling minimal for this first slice.
+            pass
+
+        try:
+            await self._session.disconnect()
+        finally:
+            self.app.exit()
+
 class AgentDetailPanel(Static):
     """Very simple selected-agent detail area.
 
@@ -74,8 +137,19 @@ class AgentDetailPanel(Static):
 class OverviewScreen(Screen):
     """Default overview screen for the runtime console."""
 
+
+    def action_shutdown_runtime(self) -> None:
+        """Open a confirmation screen to request runtime shutdown.
+
+        This satisfies FR-009's requirement for a graceful, confirmed
+        shutdown initiated from within the console UI.
+        """
+
+        self.app.push_screen(RuntimeShutdownConfirmScreen(self._session))
+
     BINDINGS = [
         ("q", "quit", "Quit"),
+        ("x", "shutdown_runtime", "Shutdown runtime"),
         ("enter", "inspect_agent", "Inspect selected agent"),
     ]
 
