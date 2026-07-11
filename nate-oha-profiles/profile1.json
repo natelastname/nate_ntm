@@ -1,0 +1,221 @@
+// Root configuration model for the nate_oha runtime.
+{
+  "runtime":
+  {
+    // Runtime mode: 'agent' or 'echo'.
+    "mode": "agent",
+    // Enable extra debug logging in runtime assembly.
+    "debug": false,
+  },
+  "llm":
+  {
+    // Model name.
+    "model": "openai/gpt-4o",
+    // API key.
+    "api_key": null,
+    // Custom base URL.
+    "base_url": null,
+    // API version (e.g., Azure).
+    "api_version": null,
+    "aws_access_key_id": null,
+    "aws_secret_access_key": null,
+    "aws_session_token": null,
+    "aws_region_name": null,
+    "aws_profile_name": null,
+    "aws_role_name": null,
+    "aws_session_name": null,
+    "aws_bedrock_runtime_endpoint": null,
+    "openrouter_site_url": "https://docs.all-hands.dev/",
+    "openrouter_app_name": "OpenHands",
+    "num_retries": 5,
+    "retry_multiplier": 8.0,
+    "retry_min_wait": 8,
+    "retry_max_wait": 64,
+    // HTTP timeout in seconds. Default is 300s (5 minutes). Set to None to
+    // disable timeout (not recommended for production).
+    "timeout": 300,
+    // Approx max chars in each event/content sent to the LLM.
+    "max_message_chars": 30000,
+    // Sampling temperature for response generation. Defaults to None (uses
+    // provider default temperature). Set to 0.0 for deterministic outputs, or
+    // higher values (0.7-1.0) for more creative responses.
+    "temperature": null,
+    // Nucleus sampling parameter. Defaults to None (uses provider default).
+    // Set to a value between 0 and 1 to control diversity of outputs.
+    "top_p": null,
+    "top_k": null,
+    // The maximum number of input tokens. Note that this is currently unused,
+    // and the value at runtime is actually the total tokens in OpenAI (e.g.
+    // 128,000 tokens for GPT-4).
+    "max_input_tokens": null,
+    // The maximum number of output tokens. This is sent to the LLM.
+    "max_output_tokens": null,
+    // Optional canonical model name for feature registry lookups. The
+    // OpenHands SDK maintains a model feature registry that maps model names
+    // to capabilities (e.g., vision support, prompt caching, responses API
+    // support). When using proxied or aliased model identifiers, set this
+    // field to the canonical model name (e.g., 'openai/gpt-4o') to ensure
+    // correct capability detection. If not provided, the 'model' field will be
+    // used for capability lookups.
+    "model_canonical_name": null,
+    // Optional HTTP headers to forward to LiteLLM requests.
+    "extra_headers": null,
+    // The cost per input token. This will available in logs for user.
+    "input_cost_per_token": null,
+    // The cost per output token. This will available in logs for user.
+    "output_cost_per_token": null,
+    "ollama_base_url": null,
+    // Enable streaming responses from the LLM. When enabled, the provided
+    // `on_token` callback in .completions and .responses will be invoked for
+    // each chunk of tokens.
+    "stream": false,
+    "drop_params": true,
+    // Modify params allows litellm to do transformations like adding a default
+    // message, when a message is empty.
+    "modify_params": true,
+    // If model is vision capable, this option allows to disable image
+    // processing (useful for cost reduction).
+    "disable_vision": null,
+    // Disable using of stop word.
+    "disable_stop_word": false,
+    // Enable caching of prompts.
+    "caching_prompt": true,
+    // Enable logging of completions.
+    "log_completions": false,
+    // The folder to log LLM completions to. Required if log_completions is
+    // True.
+    "log_completions_folder": "logs/completions",
+    // A custom tokenizer to use for token counting.
+    "custom_tokenizer": null,
+    // Whether to use native tool calling.
+    "native_tool_calling": true,
+    // Force using string content serializer when sending to LLM API. If None
+    // (default), auto-detect based on model. Useful for providers that do not
+    // support list content, like HuggingFace and Groq.
+    "force_string_serializer": null,
+    // If True, fetch any http(s) image URL in outgoing messages and inline it
+    // as a base64 ``data:`` URL before sending. If None (default), auto-detect
+    // based on model (some APIs such as Moonshot's public Kimi endpoint reject
+    // URL-formatted images and require base64). Set this explicitly when the
+    // model is reached through a proxy alias that hides the underlying
+    // provider (e.g. ``litellm_proxy/<custom-alias>``). Note: inlining only
+    // runs when ``vision_is_active()`` is True, so the alias must still be
+    // recognised as vision-capable by litellm — otherwise images are not sent
+    // at all and there is nothing to inline.
+    "inline_image_urls": null,
+    // The effort to put into reasoning. This is a string that can be one of
+    // 'low', 'medium', 'high', 'xhigh', or 'none'. Can apply to all reasoning
+    // models.
+    "reasoning_effort": "high",
+    // The level of detail for reasoning summaries. This is a string that can
+    // be one of 'auto', 'concise', or 'detailed'. Requires verified OpenAI
+    // organization. Only sent when explicitly set.
+    "reasoning_summary": null,
+    // If True, ask for ['reasoning.encrypted_content'] in Responses API
+    // include.
+    "enable_encrypted_reasoning": true,
+    // Retention policy for prompt cache. Only sent for supported models
+    // (GPT-5+ and GPT-4.1, excluding Azure deployments); explicitly stripped
+    // for all others.
+    "prompt_cache_retention": "24h",
+    // The budget tokens for extended thinking, supported by Anthropic models.
+    "extended_thinking_budget": 200000,
+    // The seed to use for random number generation.
+    "seed": null,
+    // Unique usage identifier for the LLM. Used for registry lookups,
+    // telemetry, and spend tracking.
+    "usage_id": "default",
+    // Additional key-value pairs to pass to litellm's extra_body parameter.
+    // This is useful for custom inference endpoints that need additional
+    // parameters for configuration, routing, or advanced features. NOTE: Not
+    // all LLM providers support extra_body parameters. Some providers (e.g.,
+    // OpenAI) may reject requests with unrecognized options. This is commonly
+    // supported by: - LiteLLM proxy servers (routing metadata, tracing) - vLLM
+    // endpoints (return_token_ids, etc.) - Custom inference clusters Examples:
+    // - Proxy routing: {'trace_version': '1.0.0', 'tags': ['agent:my-agent']}
+    // - vLLM features: {'return_token_ids': True}
+    "litellm_extra_body": {
+                          },
+  },
+  "openhands":
+  {
+    // One of 'always-ask', 'always-approve', or 'llm-approve'.
+    "confirmation_mode": "llm-approve",
+    // Whether token streaming is enabled.
+    "streaming": false,
+    // Base directory for workspaces. When omitted, runtime assembly will fall
+    // back to the OpenHands default get_work_dir() behavior.
+    "workspace_root": null,
+    // Optional overrides for the conversation condenser used to summarize
+    // history. When null, NateOHA's default LLMSummarizingCondenser settings
+    // are used.
+    "condenser": null,
+    // Optional explicit tool definitions for the underlying OpenHands agent.
+    // When null, a NateOHA-owned default tool set is used.
+    "tools": null,
+    // Optional list of default tool identifiers to always include in addition
+    // to any custom tools. When null, a NateOHA-owned default set is used.
+    "include_default_tools": null,
+    // Optional AgentContext controlling skills, suffixes, and related
+    // OpenHands agent behavior. The config-driven runtime currently ignores
+    // this field; it remains only for legacy compatibility.
+    "agent_context": null,
+    // Optional limit on the number of tools that may run in parallel. When
+    // null, a NateOHA default (typically 1) is used.
+    "tool_concurrency_limit": null,
+  },
+  "prompt":
+  {
+    // Raw text for the <SOUL> section describing the agent's identity, values,
+    // and persistent behavioral guidance. When set, this value is used
+    // verbatim inside the <SOUL> section of the system prompt. When null or
+    // empty, the <SOUL> section is rendered as an empty string.
+    "soul_content": null,
+    // Optional persona or tone guidance rendered as a dedicated feature block
+    // outside of <SOUL>.
+    "personality_text": "You are a coding assistant.",
+    // Filename of the Jinja2 system prompt template under
+    // src/nate_oha/prompts/. When null, the canonical 'system_prompt.j2'
+    // template is used.
+    "system_prompt_template": "system_prompt.j2",
+  },
+  "features":
+  {
+    // Configuration for the Agent Mail feature.
+    "agent_mail":
+    {
+      // Whether the Agent Mail feature is enabled.
+      //"enabled": false,
+      "enabled": true,
+
+      // Path or logical name for the Agent Mail project.
+      //"project": null,
+      "project": "~/Projects",
+
+      // Agent identity used for the bound Agent Mail user.
+      //"agent_identity": null,
+      "agent_identity": "DEFAULT_IDENTITY",
+
+      // Token or reference used to obtain credentials.
+      //"credentials_ref": null,
+      "credentials_ref": "DEFAULT_CREDENTIAL",
+
+      // Upstream mcp_agent_mail base URL.
+      //"upstream_url": null,
+      "upstream_url": "http://127.0.0.1"
+    },
+    "python_uv_project":
+    {
+      // Whether the python_uv_project feature is enabled.
+      "enabled": true,
+    },
+    "allow_proc_management":
+    {
+      // Whether the allow_proc_management feature is enabled.
+      "enabled": false,
+    },
+  },
+  // Base OpenHands mcp_config mapping. Features such as Agent Mail merge their
+  // MCP servers into this structure during runtime assembly.
+  "mcp_config": null,
+}
