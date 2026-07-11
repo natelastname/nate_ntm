@@ -115,7 +115,7 @@ Use this when the client no longer wants event notifications.
 
 ## events.notify
 
-This is not usually called by clients. It is the server-to-client notification method sent over `/events` WebSocket when a subscribed runtime or agent event occurs. 
+This is not usually called by clientqs. It is the server-to-client notification method sent over `/events` WebSocket when a subscribed runtime or agent event occurs. 
 
 Example shape:
 
