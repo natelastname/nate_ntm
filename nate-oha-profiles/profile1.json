@@ -185,24 +185,15 @@
     "agent_mail":
     {
       // Whether the Agent Mail feature is enabled.
-      //"enabled": false,
-      "enabled": true,
-
+      "enabled": false,
       // Path or logical name for the Agent Mail project.
-      //"project": null,
-      "project": "~/Projects",
-
+      "project": null,
       // Agent identity used for the bound Agent Mail user.
-      //"agent_identity": null,
-      "agent_identity": "DEFAULT_IDENTITY",
-
+      "agent_identity": null,
       // Token or reference used to obtain credentials.
-      //"credentials_ref": null,
-      "credentials_ref": "DEFAULT_CREDENTIAL",
-
+      "credentials_ref": null,
       // Upstream mcp_agent_mail base URL.
-      //"upstream_url": null,
-      "upstream_url": "http://127.0.0.1"
+      "upstream_url": null,
     },
     "python_uv_project":
     {
