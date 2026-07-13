@@ -41,6 +41,31 @@ from nate_ntm.runtime.events import AgentEvent
 from nate_ntm.runtime.metadata_store import AgentMetadata, MetadataStore, SwarmMetadata
 
 
+
+def _extract_text_payloads(events: list[AgentEvent]) -> list[str]:
+    """Return all text content payloads from ACP-derived AgentEvents.
+
+    This helper is intentionally tolerant of different ACP update kinds
+    (for example ``user_message_chunk`` vs ``agent_message_chunk``) and
+    focuses solely on the ``content.text`` field when present.
+    """
+
+    texts: list[str] = []
+    for ev in events:
+        payload = ev.payload
+        update = payload.get("update")
+        if not isinstance(update, dict):
+            continue
+        content = update.get("content")
+        if not isinstance(content, dict):
+            continue
+        if content.get("type") == "text":
+            text = content.get("text")
+            if isinstance(text, str):
+                texts.append(text)
+    return texts
+
+
 @pytest.mark.asyncio
 async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_detail(
     tmp_path: Path,
@@ -495,3 +520,148 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
         # Best-effort cleanup of the initial ACP session and underlying
         # subprocess so the test does not leak nate-oha processes.
         await acp_client.stop_agent_async(agent_id, timeout=5.0)
+
+
+@pytest.mark.asyncio
+async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_path: Path) -> None:
+    """REAL-path async prompt -> echo -> resume -> replay semantics (Epic 005).
+
+    This test extends the basic async session-persistence scenario by
+    driving a full prompt/response cycle through the real Nate OHA ACP
+    adapter:
+
+    * Start a nate-oha ACP session in echo mode via start_agent_async.
+    * Send a user prompt via NateOhaAcpClient.prompt.
+    * Observe echoed text in translated AgentEvent values.
+    * Stop the session and resume it using the persisted ACP session_id.
+    * Observe the prior conversation history being replayed on resume.
+    * Send a new prompt after replay and observe continued interaction.
+    """
+
+    project = tmp_path / "project"
+    project.mkdir(parents=True, exist_ok=True)
+
+    repo_root = Path(__file__).resolve().parents[3]
+    base_config = repo_root / "nate-oha-profiles" / "profile1.json"
+
+    env_snapshot = dict(os.environ)
+    env_snapshot.update(
+        {
+            "NATE_NTM_PROJECT_DIR": str(project),
+            "NATE_NTM_ADAPTER_MODE": AdapterKind.REAL.value,
+            "NATE_NTM_NATE_OHA_CONFIG": str(base_config),
+            "NATE_NTM_NATE_OHA_RUNTIME_MODE": "echo",
+        }
+    )
+
+    config = load_runtime_config(
+        project_path=project,
+        env=env_snapshot,
+    )
+
+    store = MetadataStore(config=config)
+    now = datetime(2026, 7, 3, 12, 0, 0)
+
+    agent_id = "nav-async-echo-replay-1"
+
+    meta = AgentMetadata(
+        agent_id=agent_id,
+        display_name="Navigator Async Echo Replay",
+        agent_mail_identity="",  # Agent Mail not required for this scenario.
+        conversation_id="",      # Force ACP session/new on first run.
+    )
+
+    swarm = SwarmMetadata(
+        swarm_id=config.swarm_id,
+        project_path=config.project_path,
+        agent_mail_project_id=str(config.project_path),
+        created_at=now,
+        last_updated_at=now,
+        agents={meta.agent_id: meta},
+    )
+    store.save_swarm_metadata(swarm)
+    store.save_agent_metadata(meta)
+
+    adapters = create_runtime_adapters(config)
+    assert isinstance(adapters.acp, NateOhaAcpClient)
+    adapters.acp.executable = "nate-oha"  # type: ignore[attr-defined]
+
+    daemon = RuntimeDaemon.resume(config, adapters=adapters)
+    acp_client = daemon.acp_client
+    assert isinstance(acp_client, NateOhaAcpClient)
+
+    events_run1: list[AgentEvent] = []
+    acp_client.on_event = events_run1.append
+
+    # ------------------------------
+    # First run: start, prompt, echo
+    # ------------------------------
+
+    await acp_client.start_agent_async(agent_id, metadata=meta)
+
+    prompt_text1 = "hello from async epic005"
+    await acp_client.prompt(agent_id, prompt_text1)
+
+    # Allow ACP updates (including echo) to be delivered.
+    await asyncio.sleep(0.5)
+
+    reloaded_meta = store.load_agent_metadata(agent_id)
+    session_id = reloaded_meta.conversation_id
+    assert isinstance(session_id, str) and session_id
+
+    # Sanity: session_id invariants for any ACP events that carry one.
+    for ev in events_run1:
+        assert ev.agent_id == agent_id
+        payload_session = ev.payload.get("session_id")
+        if payload_session is not None:
+            assert payload_session == session_id
+
+    texts_run1 = _extract_text_payloads(events_run1)
+    assert any(prompt_text1 in text for text in texts_run1)
+
+    # ------------------------------
+    # Stop and resume: replay history
+    # ------------------------------
+
+    await acp_client.stop_agent_async(agent_id, timeout=5.0)
+
+    fresh_client = NateOhaAcpClient(config=config, executable="nate-oha")
+    events_run2: list[AgentEvent] = []
+    fresh_client.on_event = events_run2.append
+
+    resume_meta = store.load_agent_metadata(agent_id)
+    assert resume_meta.conversation_id == session_id
+
+    await fresh_client.start_agent_async(agent_id, metadata=resume_meta)
+    await asyncio.sleep(0.5)
+
+    # On resume, Nate OHA should replay prior conversation history.
+    texts_run2_before = _extract_text_payloads(events_run2)
+    for text in texts_run1:
+        assert text in texts_run2_before
+
+    # ------------------------------
+    # New prompt after replay
+    # ------------------------------
+
+    prompt_text2 = "second prompt after replay"
+    await fresh_client.prompt(agent_id, prompt_text2)
+    await asyncio.sleep(0.5)
+
+    texts_run2_after = _extract_text_payloads(events_run2)
+    assert any(prompt_text2 in text for text in texts_run2_after)
+
+    # Session ID invariants across both runs.
+    for ev in events_run1 + events_run2:
+        assert ev.agent_id == agent_id
+        payload_session = ev.payload.get("session_id")
+        if payload_session is not None:
+            assert payload_session == session_id
+
+    # Best-effort cleanup of the resumed session.
+    try:
+        await fresh_client.stop_agent_async(agent_id, timeout=5.0)
+    finally:
+        # Nothing else to clean; the original daemon's session was already
+        # stopped above.
+        pass

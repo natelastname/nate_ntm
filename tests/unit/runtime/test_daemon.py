@@ -420,8 +420,16 @@ def test_runtime_daemon_agent_detail_persists_running_status_from_nate_oha_acp(
     project.mkdir(parents=True, exist_ok=True)
 
     # Take an explicit environment snapshot so the config loader does not
-    # consult repository-level .env files.
+    # consult repository-level .env files. Point Nate OHA at the same
+    # sample profile used by the real-path integration tests so that we
+    # exercise a concrete launch spec rather than relying on
+    # NateOhaAcpClient defaults.
     env_snapshot = dict(os.environ)
+    repo_root = Path(__file__).resolve().parents[3]
+    base_config = repo_root / "nate-oha-profiles" / "profile1.json"
+    env_snapshot["NATE_NTM_NATE_OHA_CONFIG"] = str(base_config)
+    env_snapshot["NATE_NTM_NATE_OHA_RUNTIME_MODE"] = "echo"
+
     config = load_runtime_config(project_path=project, env=env_snapshot)
 
     store = MetadataStore(config=config)

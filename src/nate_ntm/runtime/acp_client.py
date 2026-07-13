@@ -33,6 +33,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from acp.meta import PROTOCOL_VERSION
+from acp.schema import TextContentBlock
 
 from ..config.runtime_config import RuntimeConfig
 from .acp_connection import open_nate_oha_acp_client
@@ -1131,6 +1132,46 @@ class NateOhaAcpClient(BaseAcpClient):
         # queries can distinguish between running and stopped agents.
         session.status = "terminated"
         self._sessions[agent_id] = session
+
+    async def prompt(self, agent_id: str, prompt: str | None = None) -> str | None:
+        """Asynchronously send a user prompt into the active ACP session.
+
+        This assumes :meth:`start_agent_async` has already established an ACP
+        session for ``agent_id``. The prompt is delivered via
+        :class:`acp.client.ClientSideConnection.prompt`, and any resulting ACP
+        session updates are translated into :class:`AgentEvent` instances by
+        the associated :class:`NateNtmAcpProtocolClient`.
+
+        The return value is currently ``None``; callers should observe
+        adapter-level behavior through the emitted events rather than
+        relying on a concrete turn identifier.
+        """
+
+        session = self._sessions.get(agent_id)
+        if session is None or session.status not in {"starting", "running"}:
+            raise AcpClientError(
+                f"prompt: no active ACP session for agent {agent_id!r}; "
+                "call start_agent_async(...) first"
+            )
+
+        connection = session.connection
+        session_id = session.conversation_id
+
+        text = "" if prompt is None else prompt
+
+        # Build a single text content block for the prompt.
+        block = TextContentBlock(type="text", text=text)
+
+        # Delegate to the ACP SDK. The NateNtmAcpProtocolClient associated
+        # with this connection will receive any resulting session updates and
+        # emit AgentEvent instances via the configured event sink.
+        await connection.prompt(session_id, [block])
+
+        # There is no stable "turn ID" exposed by the ACP prompt API today,
+        # so we return None. If a useful identifier becomes available in
+        # PromptResponse in the future, this method can be updated to surface
+        # it without changing the async signature.
+        return None
 
     def start_turn(self, agent_id: str, prompt: str | None = None) -> str:  # pragma: no cover - placeholder
         """Start a new ACP turn for ``agent_id``.

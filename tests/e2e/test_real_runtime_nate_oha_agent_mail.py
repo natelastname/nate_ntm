@@ -69,15 +69,11 @@ from nate_ntm.runtime.daemon import RuntimeDaemon, StartupMode
 from nate_ntm.runtime.state import RuntimeStatus
 
 
-RUN_REAL_E2E = bool(os.environ.get("NATE_OHA_E2E"))
-
-pytestmark = pytest.mark.skipif(
-    not RUN_REAL_E2E,
-    reason=(
-        "Set NATE_OHA_E2E=1 to run REAL runtime + nate_OHA + Agent Mail E2E test. "
-        "Requires a live mcp_agent_mail server and nate_OHA on PATH."
-    ),
-)
+# NOTE: This test assumes a live Agent Mail MCP server is reachable at
+# ``http://127.0.0.1:8765/api`` (or equivalent configured via
+# NATE_NTM_AGENT_MAIL_URL / AGENT_MAIL_URL) and that a ``nate-oha``
+# executable is available on PATH. Failures typically indicate
+# environment misconfiguration rather than code-level regressions.
 
 
 def _make_real_runtime_config(project_path: Path) -> RuntimeConfig:
@@ -134,11 +130,21 @@ def test_real_runtime_nate_oha_agent_mail_create_start_resume(tmp_path: Path, mo
     project_key = str(tmp_path)
     base_url = "http://127.0.0.1:8765/api"
 
-    # RuntimeConfig will pick these up via its Agent Mail resolution
-    # helpers, and NateOhaAcpClient will in turn propagate them into
-    # AGENT_MAIL_* for the child nate_OHA process.
+    # Point Nate OHA at the sample profile used throughout this
+    # repository for real-path tests. Using an existing config mirrors
+    # the quickstart flow and ensures that ``--set runtime.mode=...``
+    # overrides operate on a valid base tree.
+    repo_root = Path(__file__).resolve().parents[3]
+    base_config = repo_root / "nate-oha-profiles" / "profile1.json"
+
+    # RuntimeConfig will pick these up via its Agent Mail and Nate OHA
+    # resolution helpers, and NateOhaAcpClient will in turn propagate
+    # them into AGENT_MAIL_* and the nate-oha launch argv for the child
+    # process.
     monkeypatch.setenv("NATE_NTM_AGENT_MAIL_PROJECT", project_key)
     monkeypatch.setenv("NATE_NTM_AGENT_MAIL_URL", base_url)
+    monkeypatch.setenv("NATE_NTM_NATE_OHA_CONFIG", str(base_config))
+    monkeypatch.setenv("NATE_NTM_NATE_OHA_RUNTIME_MODE", "echo")
 
     # ------------------------------------------------------------------
     # Phase 1: create a swarm, start the runtime, and launch nate_OHA.
@@ -149,6 +155,10 @@ def test_real_runtime_nate_oha_agent_mail_create_start_resume(tmp_path: Path, mo
     adapters = create_runtime_adapters(config)
     assert isinstance(adapters.agent_mail, McpAgentMailClient)
     assert isinstance(adapters.acp, NateOhaAcpClient)
+
+    # Align the ACP adapter's executable with the installed ``nate-oha``
+    # binary used in this repository.
+    adapters.acp.executable = "nate-oha"  # type: ignore[attr-defined]
 
     # Create a new swarm with a single agent. This allocates the Agent
     # Mail project + identity/credentials and the ACP conversation ID,
@@ -219,6 +229,10 @@ def test_real_runtime_nate_oha_agent_mail_create_start_resume(tmp_path: Path, mo
     adapters2 = create_runtime_adapters(config2)
     assert isinstance(adapters2.agent_mail, McpAgentMailClient)
     assert isinstance(adapters2.acp, NateOhaAcpClient)
+
+    # Align the second-phase ACP adapter's executable with the installed
+    # ``nate-oha`` binary used in this repository.
+    adapters2.acp.executable = "nate-oha"  # type: ignore[attr-defined]
 
     # Resume the daemon against the existing metadata. The REAL Agent
     # Mail adapter and REAL ACP adapter will revalidate that the
