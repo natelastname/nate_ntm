@@ -40,6 +40,8 @@ from .acp_protocol_client import NATE_NTM_CLIENT_CAPABILITIES
 from .events import AgentEvent, AgentEventSource
 from .metadata_store import AgentMetadata, MetadataStore
 
+from .nate_oha_launch import build_nate_oha_launch_spec
+
 __all__ = [
     "AcpClientError",
     "AcpAgentStatus",
@@ -1259,24 +1261,36 @@ class NateOhaAcpClient(BaseAcpClient):
         )
 
     def _build_command(self, metadata: AgentMetadata) -> list[str]:
-        """Construct the nate_OHA command line for ``metadata``.
+        """Construct the nate-oha ``acp`` command line for ``metadata``.
 
-        The exact set of flags is intentionally small for now and will be
-        expanded as additional Feature 002 requirements are implemented.
+        This helper delegates to :func:`build_nate_oha_launch_spec` so that
+        Nate OHA launches are driven by the :class:`RuntimeConfig` /
+        :class:`AgentMetadata` mapping defined for Epic 005 (FR-012/FR-013).
+        The resulting argv has the general form::
 
-        The current nate_OHA CLI exposes the ACP entrypoint as the
-        top-level command (``nate_OHA [OPTIONS]``) rather than an
-        explicit ``acp`` subcommand. The adapter therefore launches the
-        bare executable and adds only the flags it needs.
+            <executable> acp --config BASE_CONFIG [--resume ID] [--set ...]
+
+        The per-instance ``executable`` attribute is still honoured so
+        tests and advanced callers can override the binary used while
+        keeping the rest of the launch specification unchanged.
         """
 
-        cmd = [self.executable]
+        try:
+            spec = build_nate_oha_launch_spec(config=self.config, metadata=metadata)
+        except ValueError as exc:
+            # Normalise configuration errors as AcpClientError so callers
+            # see a consistent adapter-level surface.
+            raise AcpClientError(
+                f"Failed to build nate-oha launch spec for agent {metadata.agent_id!r}: {exc}"
+            ) from exc
 
-        # Enable Agent Mail integration when an identity is configured.
-        if metadata.agent_mail_identity:
-            cmd.append("--enable-agent-mail")
+        # Allow explicit overrides of the executable field so that tests can
+        # inject wrappers (for example, a local development build) on top of
+        # :class:`RuntimeConfig`-derived defaults.
+        if getattr(self, "executable", None) and self.executable != spec.executable:
+            spec = replace(spec, executable=self.executable)
 
-        return cmd
+        return list(spec.to_argv())
 
     def _build_env(self, agent_id: str, metadata: AgentMetadata) -> Dict[str, str]:
         """Return the environment used to launch nate_OHA.

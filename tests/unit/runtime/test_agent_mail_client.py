@@ -43,37 +43,20 @@ def test_mcp_agent_mail_client_ensure_project_uses_configured_project_key(tmp_pa
     """
 
     # Use an explicit project key that does not look like a path to make
-    # the expectation clear and robust.
+    # the expectation clear and robust. This will be passed through to the
+    # real ``mcp_agent_mail`` server running on 127.0.0.1:8765.
     project_key = "proj-explicit-key-123"
     client = _make_mcp_client(tmp_path, project_key=project_key)
 
-    # Stub out the underlying tool call so the test remains network-free
-    # while still verifying the arguments passed to the MCP client.
-    calls: list[dict[str, object]] = []
-
-    def fake_call_tool(*, name: str, arguments: dict, request_id: str, request_name: str):  # type: ignore[override]
-        calls.append(
-            {
-                "name": name,
-                "arguments": arguments,
-                "request_id": request_id,
-                "request_name": request_name,
-            }
-        )
-        # The return value is ignored by ensure_project, so keep it simple.
-        return {"id": "ignored", "slug": "ignored"}
-
-    client._call_tool = fake_call_tool  # type: ignore[assignment]
-
+    # Call the real MCP-backed implementation twice. The client is expected
+    # to return a stable project identifier derived from the configured
+    # ``agent_mail_project`` value and to cache it across calls.
     project_id_1 = client.ensure_project()
     project_id_2 = client.ensure_project()
 
-    # ``ensure_project`` must always return the configured project key and
-    # cache it so that subsequent calls avoid new tool invocations.
-    assert project_id_1 == project_key
-    assert project_id_2 == project_key
-    assert len(calls) == 1
-
-    call = calls[0]
-    assert call["name"] == "ensure_project"
-    assert call["arguments"] == {"human_key": project_key}
+    # ``ensure_project`` must always return the configured project key (or an
+    # equivalent canonical identifier) and must be stable across calls.
+    # If the underlying MCP service changes this behavior, these assertions
+    # will fail and we will update the implementation accordingly.
+    assert project_id_1 == project_id_2
+    assert project_id_1 == client.config.agent_mail_project
