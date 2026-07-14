@@ -432,14 +432,24 @@ class NateOhaAcpClient(BaseAcpClient):
             try:
                 queue.put_nowait(_EVENT_STREAM_CLOSED)
             except asyncio.QueueFull:
-                logger.warning(
-                    "acp_event_stream_close_overflow",
-                    extra={
-                        "agent_id": agent_id,
-                        "queue_size": queue.qsize(),
-                        "queue_maxsize": queue.maxsize,
-                    },
-                )
+                # Ensure the close sentinel is delivered even when the queue is
+                # full by dropping the oldest queued item. This mirrors the
+                # drop-oldest policy used for regular event emission.
+                try:
+                    _dropped = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    _dropped = None
+                try:
+                    queue.put_nowait(_EVENT_STREAM_CLOSED)
+                except asyncio.QueueFull:
+                    logger.warning(
+                        "acp_event_stream_close_overflow",
+                        extra={
+                            "agent_id": agent_id,
+                            "queue_size": queue.qsize(),
+                            "queue_maxsize": queue.maxsize,
+                        },
+                    )
 
     def _emit_event(self, event: AgentEvent) -> None:
         """Deliver an AgentEvent to subscribers and the legacy callback.
@@ -525,14 +535,24 @@ class NateOhaAcpClient(BaseAcpClient):
             try:
                 queue.put_nowait(_EVENT_STREAM_CLOSED)
             except asyncio.QueueFull:
-                logger.warning(
-                    "acp_event_subscription_close_overflow",
-                    extra={
-                        "agent_id": agent_id,
-                        "queue_size": queue.qsize(),
-                        "queue_maxsize": queue.maxsize,
-                    },
-                )
+                # Ensure the close sentinel is delivered even when the queue is
+                # full by dropping the oldest queued item. This mirrors the
+                # drop-oldest policy used for regular event emission.
+                try:
+                    _dropped = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    _dropped = None
+                try:
+                    queue.put_nowait(_EVENT_STREAM_CLOSED)
+                except asyncio.QueueFull:
+                    logger.warning(
+                        "acp_event_subscription_close_overflow",
+                        extra={
+                            "agent_id": agent_id,
+                            "queue_size": queue.qsize(),
+                            "queue_maxsize": queue.maxsize,
+                        },
+                    )
 
     async def iter_events(self, agent_id: str) -> AsyncIterator[AgentEvent]:
         """Yield AgentEvent objects for ``agent_id`` as they arrive.

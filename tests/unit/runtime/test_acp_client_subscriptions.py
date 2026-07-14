@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
-from nate_ntm.runtime.acp_client import NateOhaAcpClient
+from nate_ntm.runtime.acp_client import NateOhaAcpClient, _EVENT_STREAM_CLOSED
 from nate_ntm.runtime.events import AgentEvent, AgentEventSource
 
 
@@ -139,3 +139,100 @@ async def test_close_event_subscribers_terminates_stream(tmp_path: Path) -> None
     # No subscribers should remain registered for the agent once both the
     # iterator and the subscription context have unwound.
     assert agent_id not in client._event_subscribers
+
+
+@pytest.mark.asyncio
+async def test_close_event_subscribers_inserts_sentinel_when_queue_full(tmp_path: Path) -> None:
+    """Closing subscribers inserts a sentinel even when the queue is full.
+
+    This guards against regressions where a full per-agent queue would
+    prevent the end-of-stream marker from being enqueued, leaving
+    consumers blocked on ``queue.get()``.
+    """
+
+    config = _make_config(tmp_path)
+    client = NateOhaAcpClient(config=config)
+
+    agent_id = "agent-close-full-1"
+
+    # Register a subscriber queue and fill it to capacity using the
+    # normal event-emission path so that ``queue.full()`` is true when
+    # ``_close_event_subscribers`` runs.
+    queue = client._register_event_subscriber(agent_id)
+
+    event = AgentEvent(
+        event_id="e-base",
+        timestamp=datetime(2024, 1, 1, 12, 0, 0),
+        agent_id=agent_id,
+        source=AgentEventSource.ACP,
+        type="acp.test_event",
+        payload={"value": 1},
+    )
+
+    for _ in range(queue.maxsize):
+        client._emit_event(event)
+
+    assert queue.qsize() == queue.maxsize
+
+    client._close_event_subscribers(agent_id)
+
+    # After closure, the sentinel should be present exactly once in the
+    # queue despite it having been full.
+    items: list[object] = []
+    while not queue.empty():
+        items.append(queue.get_nowait())
+
+    assert _EVENT_STREAM_CLOSED in items
+    assert items.count(_EVENT_STREAM_CLOSED) == 1
+    assert len(items) == queue.maxsize
+
+
+@pytest.mark.asyncio
+async def test_subscribe_events_close_inserts_sentinel_when_queue_full(tmp_path: Path) -> None:
+    """Exiting ``subscribe_events`` inserts a sentinel when the queue is full.
+
+    This mirrors the behavior of ``_close_event_subscribers`` and
+    ensures that per-subscriber teardown cannot leave blocked
+    consumers when their queues are at capacity.
+    """
+
+    config = _make_config(tmp_path)
+    client = NateOhaAcpClient(config=config)
+
+    agent_id = "agent-sub-close-full-1"
+
+    # Manually enter the async context manager so we can inspect the
+    # underlying queue before and after ``__aexit__`` runs.
+    cm = client.subscribe_events(agent_id)
+    _events_iter = await cm.__aenter__()
+
+    subscribers = client._event_subscribers.get(agent_id)
+    assert subscribers is not None and len(subscribers) == 1
+    (queue,) = tuple(subscribers)
+
+    event = AgentEvent(
+        event_id="e-base",
+        timestamp=datetime(2024, 1, 1, 12, 0, 0),
+        agent_id=agent_id,
+        source=AgentEventSource.ACP,
+        type="acp.test_event",
+        payload={"value": 1},
+    )
+
+    for _ in range(queue.maxsize):
+        client._emit_event(event)
+
+    assert queue.qsize() == queue.maxsize
+
+    # Exiting the context should enqueue the close sentinel even though
+    # the queue is full.
+    await cm.__aexit__(None, None, None)
+
+    items: list[object] = []
+    while not queue.empty():
+        items.append(queue.get_nowait())
+
+    assert _EVENT_STREAM_CLOSED in items
+    assert items.count(_EVENT_STREAM_CLOSED) == 1
+    assert len(items) == queue.maxsize
+

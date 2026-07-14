@@ -678,8 +678,14 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
         async with fresh_client.subscribe_events(agent_id) as events2:
             await fresh_client.start_agent_async(agent_id, metadata=resume_meta)
 
-            # Allow nate-oha to replay prior conversation history on resume.
-            await collect_events_for(events2, events_run2, duration=0.5)
+            # Wait explicitly for replay of the canonical echoed text from the
+            # first run rather than relying on a fixed time window.
+            await next_matching_event(
+                events2,
+                lambda event: canonical_echo1 in _extract_text_payloads([event]),
+                timeout=5.0,
+                sink=events_run2,
+            )
 
         texts_run2_before = _extract_text_payloads(events_run2)
         assert canonical_echo1 in texts_run2_before
