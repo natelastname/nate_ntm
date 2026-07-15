@@ -33,6 +33,8 @@ from nate_ntm.config.runtime_config import AdapterKind, RuntimeConfig, load_runt
 from nate_ntm.runtime.acp_client import NateOhaAcpClient
 from nate_ntm.runtime.metadata_store import AgentMetadata
 
+from nate_ntm.runtime.nate_oha_launch import build_effective_nate_oha_config
+
 
 RUN_REAL_NATE_OHA = bool(os.environ.get("NATE_OHA_INTEGRATION"))
 
@@ -46,14 +48,32 @@ def _make_runtime_config(project_path: Path) -> RuntimeConfig:
     """Return a ``RuntimeConfig`` suitable for NateOhaAcpClient integration.
 
     The config uses ``AdapterKind.REAL`` so that it matches the production
-    code paths but otherwise relies on defaults. Metadata is written under
-    ``project_path`` so that each test can run in isolation.
+    code paths and points Nate OHA at the repository's sample profile.
+    Metadata is written under ``project_path`` so that each test can run in
+    isolation.
     """
+
+    # Snapshot the current environment so ``load_runtime_config`` does not
+    # consult any repository-level .env files and then overlay the minimal
+    # Nate OHA launch settings required by NateOhaAcpClient.
+    env_snapshot = dict(os.environ)
+    repo_root = Path(__file__).resolve().parents[3]
+    base_config = repo_root / "nate-oha-profiles" / "profile1.json"
+
+    env_snapshot.update(
+        {
+            "NATE_NTM_PROJECT_DIR": str(project_path),
+            "NATE_NTM_ADAPTER_MODE": AdapterKind.REAL.value,
+            "NATE_NTM_NATE_OHA_CONFIG": str(base_config),
+            "NATE_NTM_NATE_OHA_RUNTIME_MODE": "echo",
+        }
+    )
 
     return load_runtime_config(
         project_path=project_path,
         metadata_dir=project_path / ".nate_ntm",
         adapter_mode=AdapterKind.REAL,
+        env=env_snapshot,
     )
 
 
@@ -69,10 +89,13 @@ def test_start_and_stop_agent_roundtrip(tmp_path: Path) -> None:
     config = _make_runtime_config(tmp_path)
     client = NateOhaAcpClient(config=config)
 
-    # Use a bare agent metadata record with no Agent Mail identity so that
-    # nate_OHA is launched without Agent Mail integration. This keeps the
-    # smoke test focused on the core ACP/process contract.
-    meta = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+    # Use a minimal agent metadata record with no Agent Mail identity so that
+    # nate_OHA is launched without Agent Mail integration. Attach a persisted
+    # NateOhaConfig snapshot so that the adapter can launch from the unified
+    # configuration model.
+    base_meta = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+    nate_oha_cfg = build_effective_nate_oha_config(config=config, metadata=base_meta)
+    meta = AgentMetadata(agent_id="agent-1", display_name="Agent One", nate_oha_config=nate_oha_cfg)
 
     # ``start_agent`` will perform the nate_OHA version check and then
     # spawn the subprocess. Any incompatibility or startup failure should

@@ -1062,53 +1062,39 @@ class NateOhaAcpClient(BaseAcpClient):
     def _build_command(self, agent_id: str, metadata: AgentMetadata) -> list[str]:
         """Construct the nate-oha ``acp`` command line for an agent.
 
-        When a fully resolved :class:`NateOhaConfig` is available on
-        :class:`AgentMetadata`, this helper prefers to launch Nate OHA from
-        that configuration by materialising it into a temporary JSON file
-        via :func:`materialize_nate_oha_config`. In this mode the effective
-        configuration is treated as the single source of truth and **no
-        additional ``--set`` overrides are emitted**.
+        This helper always launches Nate OHA from the persisted effective
+        :class:`NateOhaConfig` attached to :class:`AgentMetadata`. The
+        configuration is materialised into a temporary JSON file via
+        :func:`materialize_nate_oha_config` and passed to the CLI via
+        ``--config``. When :attr:`AgentMetadata.conversation_id` is non-empty,
+        the same value is forwarded via ``--resume`` so that ACP can resume the
+        existing session.
 
-        For legacy swarms that do not yet persist ``nate_oha_config``, the
-        method falls back to :func:`build_nate_oha_launch_spec`, which
-        implements the base-config-plus-overrides model derived from
-        :class:`RuntimeConfig` and :class:`AgentMetadata`.
+        If ``metadata.nate_oha_config`` is not set, an :class:`AcpClientError`
+        is raised; callers must ensure that an effective Nate OHA
+        configuration has been derived and persisted for each agent before
+        launch.
         """
 
         cfg = getattr(metadata, "nate_oha_config", None)
         conversation_id = metadata.conversation_id or None
 
         # Preferred path: launch from the persisted effective Nate OHA config.
-        if cfg is not None:
-            config_path = materialize_nate_oha_config(config=cfg)
-            # Track the temporary directory so it can be cleaned up when the
-            # agent is stopped.
-            self._temp_config_dirs[agent_id] = str(config_path.parent)
-
-            argv: list[str] = [self.executable, "acp", "--config", str(config_path)]
-            if conversation_id:
-                argv.extend(["--resume", conversation_id])
-            return argv
-
-        # Legacy path: derive the launch specification from RuntimeConfig and
-        # AgentMetadata. This preserves existing behaviour for swarms created
-        # before Nate OHA config persistence was introduced.
-        try:
-            spec = build_nate_oha_launch_spec(config=self.config, metadata=metadata)
-        except ValueError as exc:
-            # Normalise configuration errors as AcpClientError so callers
-            # see a consistent adapter-level surface.
+        if cfg is None:
             raise AcpClientError(
-                f"Failed to build nate-oha launch spec for agent {metadata.agent_id!r}: {exc}"
-            ) from exc
+                "NateOhaAcpClient._build_command requires metadata.nate_oha_config to be set; "
+                f"no persisted Nate OHA configuration found for agent {agent_id!r}."
+            )
 
-        # Allow explicit overrides of the executable field so that tests can
-        # inject wrappers (for example, a local development build) on top of
-        # :class:`RuntimeConfig`-derived defaults.
-        if getattr(self, "executable", None) and self.executable != spec.executable:
-            spec = replace(spec, executable=self.executable)
+        config_path = materialize_nate_oha_config(config=cfg)
+        # Track the temporary directory so it can be cleaned up when the
+        # agent is stopped.
+        self._temp_config_dirs[agent_id] = str(config_path.parent)
 
-        return list(spec.to_argv())
+        argv: list[str] = [self.executable, "acp", "--config", str(config_path)]
+        if conversation_id:
+            argv.extend(["--resume", conversation_id])
+        return argv
 
     def _build_env(self, agent_id: str, metadata: AgentMetadata) -> Dict[str, str]:
         """Return the environment used to launch nate_OHA.
@@ -1116,30 +1102,30 @@ class NateOhaAcpClient(BaseAcpClient):
         The base environment is inherited from the current process with a
         small set of nate_ntm-specific variables added for correlation.
 
-        When Agent Mail is enabled for an agent (that is, when
-        ``metadata.agent_mail_identity`` is non-empty), this helper derives
-        the required ``AGENT_MAIL_*`` variables from the runtime's
-        configuration and the :class:`AgentMetadata` for the agent rather
-        than reading them directly from :mod:`os.environ`. This ensures
-        that Agent Mail launch settings are explicit, testable, and tied to
-        the runtime/swarm configuration instead of ambient environment
-        state.
+        Agent Mail configuration is derived solely from the persisted
+        :class:`NateOhaConfig` attached to ``metadata``:
 
-        Configuration invariants:
-
-        * If no Agent Mail identity is configured for an agent, no
-          ``AGENT_MAIL_*`` variables are added and nate_OHA is launched
-          without Agent Mail integration.
-        * If an Agent Mail identity is configured but the runtime/swarm
-          Agent Mail configuration is incomplete or invalid, an
-          :class:`AcpClientError` is raised and **no subprocess is
-          launched**. This provides the required fail-fast behavior.
+        * When ``metadata.nate_oha_config.features.agent_mail.enabled`` is
+          truthy, the ``project``, ``agent_identity``, ``credentials_ref``,
+          and ``upstream_url`` fields are mapped to the corresponding
+          ``AGENT_MAIL_*`` environment variables.
+        * When the Agent Mail feature is present but marked disabled, no
+          ``AGENT_MAIL_*`` variables are injected and nate_OHA runs without
+          Agent Mail integration.
+        * When legacy Agent Mail hints are present (for example
+          ``metadata.agent_mail_identity`` or
+          :class:`RuntimeConfig.agent_mail_project`) but the persisted
+          Nate OHA configuration does not have a ``features.agent_mail``
+          section, an :class:`AcpClientError` is raised. Older
+          persistence formats that relied on RuntimeConfig + AgentMetadata
+          are intentionally not supported here.
         """
 
         # Start from the current process environment but treat it purely as
         # a base for non-secret settings and unrelated variables. All
-        # required Agent Mail configuration is derived from
-        # :class:`RuntimeConfig` and :class:`AgentMetadata`.
+        # required Agent Mail configuration is derived from the persisted
+        # :class:`NateOhaConfig` attached to the agent's metadata rather than
+        # from ambient process environment.
         env: Dict[str, str] = dict(os.environ)
 
         # Runtime correlation variables used by nate_ntm and downstream
@@ -1158,20 +1144,18 @@ class NateOhaAcpClient(BaseAcpClient):
         if metadata.conversation_id:
             env.setdefault("NATE_NTM_AGENT_CONVERSATION_ID", metadata.conversation_id)
 
-        # When a persisted Nate OHA configuration is available, prefer its
-        # Agent Mail feature settings over the legacy RuntimeConfig /
-        # AgentMetadata mapping. This keeps nate_oha_config as the single
-        # source of truth for launch-time behavior while preserving a
-        # backwards-compatible path for older swarms that do not yet persist
-        # Nate OHA config.
+        # When a persisted Nate OHA configuration is available, derive Agent
+        # Mail launch settings exclusively from its ``features.agent_mail``
+        # section. This keeps nate_oha_config as the single source of truth for
+        # launch-time behavior and avoids relying on separately persisted
+        # Agent Mail identity/credential fields.
         cfg = getattr(metadata, "nate_oha_config", None)
         features = getattr(cfg, "features", None) if cfg is not None else None
         agent_mail_cfg = getattr(features, "agent_mail", None) if features is not None else None
 
         if agent_mail_cfg is not None:
             # Config-driven Agent Mail. When the feature is disabled, do not
-            # inject any AGENT_MAIL_* variables regardless of legacy metadata
-            # fields.
+            # inject any AGENT_MAIL_* variables.
             if not getattr(agent_mail_cfg, "enabled", False):
                 return env
 
@@ -1209,49 +1193,25 @@ class NateOhaAcpClient(BaseAcpClient):
 
             return env
 
-        # Legacy behavior for swarms that do not yet persist Nate OHA config.
-        # If no Agent Mail identity is configured, leave AGENT_MAIL_* alone
-        # and rely solely on the correlation variables above. This keeps
-        # dev/test agents that do not use Agent Mail simple.
-        if not metadata.agent_mail_identity:
-            return env
+        # No config-driven Agent Mail settings are present. If there are also no
+        # legacy Agent Mail hints, leave AGENT_MAIL_* unchanged so nate_OHA runs
+        # without Agent Mail integration.
+        has_legacy_agent_mail = bool(
+            metadata.agent_mail_identity
+            or metadata.agent_mail_credentials_ref
+            or self.config.agent_mail_project
+            or self.config.agent_mail_upstream_url
+        )
 
-        # Agent Mail integration is enabled from this point on. All
-        # required configuration must be supplied via RuntimeConfig and
-        # AgentMetadata.
-        project = (self.config.agent_mail_project or "").strip()
-        if not project:
+        if has_legacy_agent_mail:
+            # The runtime has legacy Agent Mail configuration but no
+            # corresponding NateOhaConfig.features.agent_mail section. Older
+            # persistence formats that relied on RuntimeConfig + AgentMetadata
+            # are no longer supported.
             raise AcpClientError(
-                "Agent Mail project is not configured; set RuntimeConfig.agent_mail_project "
-                "(for example via NATE_NTM_AGENT_MAIL_PROJECT or AGENT_MAIL_PROJECT) "
-                "before launching nate_OHA."
+                "Agent Mail metadata is present but NateOhaConfig.features.agent_mail is not set; "
+                "migrate this swarm to persist an effective NateOhaConfig for each agent before launching nate_OHA."
             )
-        env["AGENT_MAIL_PROJECT"] = project
-
-        identity = metadata.agent_mail_identity.strip()
-        if not identity:
-            raise AcpClientError(
-                f"Agent Mail identity is empty for agent {agent_id!r}; "
-                "set AgentMetadata.agent_mail_identity before launching nate_OHA."
-            )
-        env["AGENT_MAIL_AGENT"] = identity
-
-        token = metadata.agent_mail_credentials_ref.strip() if metadata.agent_mail_credentials_ref else ""
-        if not token:
-            raise AcpClientError(
-                f"Agent Mail token/credentials_ref not configured for agent {agent_id!r}; "
-                "set AgentMetadata.agent_mail_credentials_ref before launching nate_OHA."
-            )
-        env["AGENT_MAIL_TOKEN"] = token
-
-        upstream = (self.config.agent_mail_upstream_url or "").strip()
-        if not upstream:
-            raise AcpClientError(
-                "Agent Mail upstream URL is not configured; set RuntimeConfig.agent_mail_upstream_url "
-                "(for example via NATE_NTM_AGENT_MAIL_URL or AGENT_MAIL_UPSTREAM_URL) "
-                "before launching nate_OHA."
-            )
-        env["AGENT_MAIL_UPSTREAM_URL"] = upstream
 
         return env
 

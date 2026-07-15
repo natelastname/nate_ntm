@@ -23,6 +23,8 @@ from nate_ntm.runtime.agent_mail_client import FakeAgentMailClient
 from nate_ntm.runtime.adapters import RuntimeAdapters
 from nate_ntm.runtime.acp_client import AcpAgentStatus, AcpClientError, BaseAcpClient, NateOhaAcpClient
 from nate_ntm.runtime.events import AgentEventSource
+from nate_ntm.runtime.nate_oha_launch import build_effective_nate_oha_config
+
 from nate_ntm.runtime.daemon import (
     MetadataAlreadyExistsError,
     MetadataMissingError,
@@ -528,10 +530,18 @@ def test_runtime_daemon_agent_detail_persists_running_status_from_nate_oha_acp(
     store = MetadataStore(config=config)
     now = datetime(2026, 7, 3, 12, 0, 0)
 
+    base_meta = AgentMetadata(
+        agent_id="nav-1",
+        display_name="Navigator 1",
+        last_known_status="Idle",
+    )
+    nate_oha_cfg = build_effective_nate_oha_config(config=config, metadata=base_meta)
+
     meta = AgentMetadata(
         agent_id="nav-1",
         display_name="Navigator 1",
         last_known_status="Idle",
+        nate_oha_config=nate_oha_cfg,
     )
     swarm = SwarmMetadata(
         swarm_id=config.swarm_id,

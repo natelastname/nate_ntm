@@ -40,7 +40,7 @@ from nate_ntm.runtime.agent_mail_client import McpAgentMailClient
 from nate_ntm.runtime.daemon import RuntimeDaemon
 from nate_ntm.runtime.events import AgentEvent
 from nate_ntm.runtime.metadata_store import AgentMetadata, MetadataStore, SwarmMetadata
-
+from nate_ntm.runtime.nate_oha_launch import build_effective_nate_oha_config
 
 
 def _extract_text_payloads(events: list[AgentEvent]) -> list[str]:
@@ -187,11 +187,20 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
 
     # Seed a single agent with no pre-existing ACP conversation
     # identifier so that start_agent_async must call ``session/new``.
+    base_meta = AgentMetadata(
+        agent_id="nav-async-1",
+        display_name="Navigator Async 1",
+        agent_mail_identity="",  # Agent Mail is optional for this test.
+        conversation_id="",  # Force the "session/new" path.
+    )
+    nate_oha_cfg = build_effective_nate_oha_config(config=config, metadata=base_meta)
+
     meta = AgentMetadata(
         agent_id="nav-async-1",
         display_name="Navigator Async 1",
         agent_mail_identity="",  # Agent Mail is optional for this test.
         conversation_id="",  # Force the "session/new" path.
+        nate_oha_config=nate_oha_cfg,
     )
 
     swarm = SwarmMetadata(
@@ -218,9 +227,6 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
     adapters = create_runtime_adapters(config)
     assert isinstance(adapters.acp, NateOhaAcpClient)
 
-    # Point the ACP adapter at the installed ``nate-oha`` binary used in
-    # this repository. The default ``"nate_OHA"`` name is correct for the
-    # upstream CLI but does not match the local binary on all systems.
     adapters.acp.executable = "nate-oha"  # type: ignore[attr-defined]
 
     daemon = RuntimeDaemon.resume(config, adapters=adapters)
@@ -388,6 +394,9 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
             # If the server is unreachable or misconfigured, the test
             # fails via AgentMailClientError.
             "NATE_NTM_AGENT_MAIL_URL": "http://127.0.0.1:8765/api",
+            # Explicitly enable Agent Mail so that build_effective_nate_oha_config
+            # materialises ``features.agent_mail`` in the effective config.
+            "NATE_NTM_AGENT_MAIL_ENABLED": "true",
         }
     )
 
@@ -425,12 +434,22 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
     assert identity
     assert token
 
+    base_meta = AgentMetadata(
+        agent_id=agent_id,
+        display_name="Navigator Async Mail 1",
+        agent_mail_identity=identity,
+        agent_mail_credentials_ref=token or "",
+        conversation_id="",  # Force the ACP "session/new" path on first run.
+    )
+    nate_oha_cfg = build_effective_nate_oha_config(config=config, metadata=base_meta)
+
     meta = AgentMetadata(
         agent_id=agent_id,
         display_name="Navigator Async Mail 1",
         agent_mail_identity=identity,
         agent_mail_credentials_ref=token or "",
         conversation_id="",  # Force the ACP "session/new" path on first run.
+        nate_oha_config=nate_oha_cfg,
     )
 
     swarm = SwarmMetadata(
@@ -601,11 +620,20 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
 
     agent_id = "nav-async-echo-replay-1"
 
+    base_meta = AgentMetadata(
+        agent_id=agent_id,
+        display_name="Navigator Async Echo Replay",
+        agent_mail_identity="",  # Agent Mail not required for this scenario.
+        conversation_id="",      # Force ACP session/new on first run.
+    )
+    nate_oha_cfg = build_effective_nate_oha_config(config=config, metadata=base_meta)
+
     meta = AgentMetadata(
         agent_id=agent_id,
         display_name="Navigator Async Echo Replay",
         agent_mail_identity="",  # Agent Mail not required for this scenario.
         conversation_id="",      # Force ACP session/new on first run.
+        nate_oha_config=nate_oha_cfg,
     )
 
     swarm = SwarmMetadata(
