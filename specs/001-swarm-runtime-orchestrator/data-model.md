@@ -66,16 +66,12 @@ Represents persisted configuration and identity for a single agent within the sw
   - Reference to credentials (e.g., key name, secret path) rather than raw secrets.
 - `conversation_id: string`
   - OpenHands conversation identifier associated with this agent's ongoing work.
-- `launch_config: object`
-  - Parameters needed to launch the agent subprocess (command, environment, working directory, etc.).
-- `model: string`
-  - Model name or configuration used by the agent (if applicable).
-- `task_description: string`
-  - High-level description of the agent's responsibilities or initial assignment.
 - `restart_policy: object`
   - Limits and backoff settings for automatic restarts.
 - `last_known_status: string`
   - Snapshot of the last persisted agent status (e.g., `Idle`, `Running`, `Failed`).
+- `nate_oha_config: NateOhaConfig | null`
+  - Fully resolved Nate OHA configuration for this agent. When present this is treated as the source of truth for launch-time behaviour (LLM model, prompts, Agent Mail feature flags, etc.).
 
 **Invariants:**
 
@@ -84,17 +80,17 @@ Represents persisted configuration and identity for a single agent within the sw
 
 ### 2.3 Metadata Store Layout
 
-The spec requires project-local file persistence but does not fix the exact layout. A plausible structure under `.nate_ntm/`:
+The ConfigOverhaul persistence model standardises on a single, project-local
+file under `.nate_ntm/`:
 
 ```text
 .nate_ntm/
-├── swarm.json             # SwarmMetadata (top-level)
-└── agents/
-    ├── <agent_id>.json    # Individual AgentMetadata records
-    └── ...
+└── swarm.json   # Single SwarmState object graph (authoritative)
 ```
 
-Other layouts (single combined file, YAML/TOML) are acceptable as long as they preserve the semantics above.
+Older layouts that used `.nate_ntm/agents/` with per-agent JSON files are no
+longer written by the runtime. Any such files are ignored when loading state;
+`SwarmState`/`swarm.json` is the source of truth.
 
 ## 3. Transient Runtime State
 

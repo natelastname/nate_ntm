@@ -91,7 +91,7 @@ For this feature, no new project scaffolding or package layout changes are requi
 - [x] T212 [US1] Implement `start_agent` and the nate_OHA process launch contract.
   - Implement `NateOhaAcpClient.start_agent` in `src/nate_ntm/runtime/acp_client.py` to launch a dedicated `nate_OHA` ACP subprocess per agent using `subprocess.Popen` and the process launch contract in `specs/002-nate-oha-acp-adapter/contracts/nate_oha_process_launch.md`:
     - Resolve the executable and base arguments, ensuring that `--enable-agent-mail` is included when launching nate_OHA with Agent Mail enabled (for example: `nate_OHA acp --enable-agent-mail ...`), consistent with `NATE_OHA_GUIDE.md`.
-    - Derive the working directory from `SwarmMetadata.project_path` and/or `AgentMetadata.launch_config`.
+    - Derive the working directory from `SwarmMetadata.project_path` / `RuntimeConfig.project_path`.
     - Populate the required `AGENT_MAIL_*` environment variables (`AGENT_MAIL_PROJECT`, `AGENT_MAIL_AGENT`, `AGENT_MAIL_TOKEN`, `AGENT_MAIL_UPSTREAM_URL`) and any `NATE_NTM_*` correlation variables from `SwarmMetadata` and `AgentMetadata`.
     - Initialize or update the associated `NateOhaProcessRecord` (status "starting", `pid`, timestamps, etc.).
     - Emit a `nate_oha_process_started` (or equivalent) `AgentEvent` via `on_event` when the process is successfully spawned.

@@ -40,6 +40,8 @@ from .adapters import RuntimeAdapters, create_runtime_adapters
 from .agent_mail_client import BaseAgentMailClient, FakeAgentMailClient, McpAgentMailClient
 from .agents import AgentSupervisor
 from .metadata_store import AgentMetadata, MetadataStore, SwarmMetadata
+from .nate_oha_launch import build_effective_nate_oha_config
+from .nate_oha_config_compat import NateOhaConfig
 from .scheduler import RuntimeScheduler
 from .state import AgentStatus, RuntimeState, RuntimeStatus
 
@@ -287,6 +289,33 @@ class RuntimeDaemon:
                     agent_mail_identity=agent_mail_identity,
                     agent_mail_credentials_ref=agent_mail_credentials_ref or "",
                 )
+
+        # When a Nate OHA base configuration and runtime mode are configured
+        # for the swarm, eagerly resolve the effective Nate OHA configuration
+        # for each newly created agent. The resulting NateOhaConfig is
+        # persisted via SwarmState/AgentState and reused across daemon
+        # restarts instead of being re-derived on every launch.
+        if agents and config.nate_oha_config_path is not None and config.nate_oha_runtime_mode:
+            from .nate_oha_launch import (  # local import to avoid cycles
+                build_effective_nate_oha_config,
+            )
+
+            new_agents: dict[str, "AgentMetadata"] = {}
+            for agent_id, meta in agents.items():
+                try:
+                    nate_oha_config = build_effective_nate_oha_config(
+                        config=config,
+                        metadata=meta,
+                    )
+                except ValueError as exc:
+                    raise RuntimeStartupError(
+                        f"Failed to build Nate OHA configuration for agent {agent_id!r}: {exc}"
+                    ) from exc
+
+                new_agents[agent_id] = replace(meta, nate_oha_config=nate_oha_config)
+
+            agents = new_agents
+
 
         now = datetime.utcnow()
         swarm = SwarmMetadata(

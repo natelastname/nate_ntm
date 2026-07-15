@@ -23,7 +23,9 @@ be unit tested in isolation and reused across different integration points.
 """
 
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
+import tempfile
 from typing import Mapping, MutableMapping, Sequence
 
 __all__ = ["NateOhaLaunchSpec", "build_nate_oha_launch_spec"]
@@ -104,26 +106,14 @@ class NateOhaLaunchSpec:
     # :class:`ValueError` when a conflicting key is provided.
     extra_overrides: Mapping[str, str] = field(default_factory=dict)
 
-    def to_argv(self) -> Sequence[str]:
-        """Render this launch specification as a Nate OHA ``argv`` list.
+    def _build_override_mapping(self) -> dict[str, str]:
+        """Return a mapping of Nate OHA config overrides for this spec.
 
-        The resulting sequence has the general form:
-
-        .. code-block:: text
-
-            <executable> acp \
-                --config BASE_CONFIG \
-                [--resume CONVERSATION_ID] \
-                [--set path=value]...
-
-        ``--set`` arguments are emitted in a deterministic order so that
-        tests can assert on the exact argument vector.
+        Keys are configuration paths (for example, ``"runtime.mode"``) and
+        values are their corresponding stringified overrides. This helper is
+        shared between :meth:`to_argv` and higher-level configuration helpers
+        that need a structured view of the overrides.
         """
-
-        argv: list[str] = [self.executable, "acp", "--config", str(self.base_config)]
-
-        if self.conversation_id:
-            argv.extend(["--resume", self.conversation_id])
 
         sets: MutableMapping[str, str] = {}
 
@@ -165,7 +155,7 @@ class NateOhaLaunchSpec:
         # Apply any additional overrides for *new* configuration paths. When an
         # override attempts to target a structured path, raise an error so that
         # callers must instead adjust the corresponding typed field on this
-        # dataclass. Sorting by key keeps the argument order stable.
+        # dataclass.
         if self.extra_overrides:
             for key, value in self.extra_overrides.items():
                 key_str = str(key)
@@ -176,14 +166,45 @@ class NateOhaLaunchSpec:
                     )
                 sets[key_str] = str(value)
 
+        return dict(sets)
+
+    def iter_overrides(self) -> Sequence[str]:
+        """Yield ``"path=value"`` override strings in deterministic order."""
+
+        sets = self._build_override_mapping()
         for path in sorted(sets.keys()):
-            argv.extend(["--set", f"{path}={sets[path]}"])
+            yield f"{path}={sets[path]}"
+
+    def to_argv(self) -> Sequence[str]:
+        """Render this launch specification as a Nate OHA ``argv`` list.
+
+        The resulting sequence has the general form:
+
+        .. code-block:: text
+
+            <executable> acp \
+                --config BASE_CONFIG \
+                [--resume CONVERSATION_ID] \
+                [--set path=value]...
+
+        ``--set`` arguments are emitted in a deterministic order so that
+        tests can assert on the exact argument vector.
+        """
+
+        argv: list[str] = [self.executable, "acp", "--config", str(self.base_config)]
+
+        if self.conversation_id:
+            argv.extend(["--resume", self.conversation_id])
+
+        for override in self.iter_overrides():
+            argv.extend(["--set", override])
 
         return argv
 
 
 from ..config.runtime_config import RuntimeConfig
 from .metadata_store import AgentMetadata
+from .nate_oha_config_compat import NateOhaConfig, load_nate_oha_config
 
 
 def build_nate_oha_launch_spec(
@@ -285,4 +306,73 @@ def build_nate_oha_launch_spec(
         agent_mail_credentials_ref=agent_mail_credentials_ref,
         agent_mail_upstream_url=agent_mail_upstream_url,
     )
+
+
+def build_effective_nate_oha_config(*, config: RuntimeConfig, metadata: AgentMetadata) -> NateOhaConfig:
+    """Build the effective :class:`NateOhaConfig` for an agent.
+
+    This helper mirrors the base-config-plus-overrides model used by
+    :func:`build_nate_oha_launch_spec` but returns a validated Nate OHA
+    configuration object instead of an ``argv`` list. It is intended for
+    persistence via :class:`~nate_ntm.runtime.swarm_state.AgentState` and
+    for call sites that prefer to read configuration directly rather than
+    re-deriving it from :class:`RuntimeConfig` on each launch.
+
+    The resulting configuration is derived as follows:
+
+    * ``config.nate_oha_config_path`` provides the base JSON file.
+    * Overrides are taken from :class:`NateOhaLaunchSpec._build_override_mapping`,
+      which corresponds exactly to the ``--set path=value`` arguments that
+      would be passed to the Nate OHA CLI.
+    * The ACP-owned conversation/session identifier is **not** embedded in
+    the configuration; it remains a separate field on
+      :class:`AgentMetadata` / :class:`AgentState`.
+    """
+
+    spec = build_nate_oha_launch_spec(config=config, metadata=metadata)
+    overrides = list(spec.iter_overrides())
+
+    # Delegate validation and override application to nate_oha.config.
+    return load_nate_oha_config(spec.base_config, overrides=overrides)
+
+
+
+def materialize_nate_oha_config(*, config: NateOhaConfig, prefix: str = "nate-ntm-nate-oha-config-") -> Path:
+    """Materialize a :class:`NateOhaConfig` into a temporary JSON file.
+
+    The returned path points to a JSON configuration file placed in a
+    dedicated temporary directory created via :func:`tempfile.mkdtemp`.
+    Callers are responsible for cleaning up the directory when the
+    configuration is no longer needed; it MUST NOT be treated as durable
+    project metadata.
+
+    The helper is deliberately tolerant of different configuration model
+    implementations. It first prefers Pydantic v2's ``model_dump`` API
+    (using ``mode=\"json\"`` when available) and falls back to ``dict()``
+    when necessary.
+    """
+
+    # Create an isolated temporary directory for this materialized config
+    # so callers can safely remove it without affecting any other files.
+    tmpdir = Path(tempfile.mkdtemp(prefix=prefix))
+    path = tmpdir / "nate-oha-config.json"
+
+    # Accept both Pydantic-style models and plain mappings.
+    try:
+        # Pydantic v2-style API.
+        data = config.model_dump(mode="json")  # type: ignore[attr-defined]
+    except AttributeError:  # pragma: no cover - defensive
+        if hasattr(config, "dict"):
+            data = config.dict()  # type: ignore[call-arg]
+        else:  # pragma: no cover - defensive
+            raise TypeError(
+                "NateOhaConfig instance does not support model_dump() or dict(); "
+                "cannot materialize configuration to JSON."
+            )
+
+    # Write a stable JSON representation to disk. Sorting keys keeps the
+    # output deterministic for tests while remaining a valid Nate OHA
+    # configuration file for the CLI.
+    path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    return path
 

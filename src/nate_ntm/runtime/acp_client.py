@@ -21,6 +21,8 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Callable, Dict, Mapping, Optional, Literal, Set
 
 import os
+import re
+import shutil
 import subprocess
 import uuid
 
@@ -33,7 +35,7 @@ from .acp_protocol_client import NATE_NTM_CLIENT_CAPABILITIES
 from .events import AgentEvent, AgentEventSource
 from .metadata_store import AgentMetadata, MetadataStore
 
-from .nate_oha_launch import build_nate_oha_launch_spec
+from .nate_oha_launch import build_nate_oha_launch_spec, materialize_nate_oha_config
 
 __all__ = [
     "AcpClientError",
@@ -379,6 +381,12 @@ class NateOhaAcpClient(BaseAcpClient):
 
     # Cache of per-agent conversation identifiers for this adapter instance.
 
+    # Materialized Nate OHA configuration directories keyed by ``agent_id``.
+    # These are created on-demand when a launch requires a config file and
+    # are cleaned up when the corresponding agent is stopped.
+    _temp_config_dirs: Dict[str, str] = field(default_factory=dict, init=False)
+
+
     # Per-agent subscribers for async event streaming. Each entry is a set of
     # queues, one per active subscription created by :meth:`subscribe_events`.
     _event_subscribers: Dict[str, Set[asyncio.Queue[Any]]] = field(
@@ -627,7 +635,7 @@ class NateOhaAcpClient(BaseAcpClient):
         if existing is not None and existing.status in {"starting", "running"}:
             return
 
-        cmd = self._build_command(metadata)
+        cmd = self._build_command(agent_id, metadata)
         env = self._build_env(agent_id, metadata)
 
         try:
@@ -650,6 +658,9 @@ class NateOhaAcpClient(BaseAcpClient):
                 restart_count=existing.restart_count if existing else 0,
             )
             self._processes[agent_id] = record
+            # Best-effort cleanup of any materialized Nate OHA config created
+            # for this launch attempt.
+            self._cleanup_temp_config(agent_id)
             raise AcpClientError(
                 f"Failed to launch nate_OHA process for agent {agent_id!r}: {message}"
             ) from exc
@@ -731,7 +742,7 @@ class NateOhaAcpClient(BaseAcpClient):
         # Construct the nate_OHA command and environment using the existing
         # helpers so that process-launch semantics remain consistent with the
         # synchronous implementation.
-        cmd = self._build_command(metadata)
+        cmd = self._build_command(agent_id, metadata)
         env = self._build_env(agent_id, metadata)
 
         # ``open_nate_oha_acp_client`` is an async context manager that binds
@@ -759,6 +770,9 @@ class NateOhaAcpClient(BaseAcpClient):
                     # Suppress secondary errors during cleanup; the original
                     # exception is what we surface to callers.
                     pass
+            # Best-effort cleanup of any materialized Nate OHA config created
+            # for this launch attempt.
+            self._cleanup_temp_config(agent_id)
             raise AcpClientError(
                 f"Failed to establish ACP connection for agent {agent_id!r}: {exc}"
             ) from exc
@@ -858,8 +872,10 @@ class NateOhaAcpClient(BaseAcpClient):
         finally:
             # Regardless of whether shutdown succeeds or fails, terminate any
             # active event subscriptions for this agent so callers do not wait
-            # indefinitely on a closed session.
+            # indefinitely on a closed session, and clean up any temporary
+            # Nate OHA configuration created for the agent.
             self._close_event_subscribers(agent_id)
+            self._cleanup_temp_config(agent_id)
 
         # Mark the in-memory session as terminated so any future status
         # queries can distinguish between running and stopped agents.
@@ -945,8 +961,10 @@ class NateOhaAcpClient(BaseAcpClient):
                 record.status = "terminated"
 
             # Terminate any active event subscriptions for this agent so that
-            # callers do not wait indefinitely on a non-existent process.
+            # callers do not wait indefinitely on a non-existent process, and
+            # clean up any temporary Nate OHA configuration for the agent.
             self._close_event_subscribers(agent_id)
+            self._cleanup_temp_config(agent_id)
             return
 
         # If the process has already exited, just normalize the status.
@@ -970,6 +988,7 @@ class NateOhaAcpClient(BaseAcpClient):
                 )
             )
             self._close_event_subscribers(agent_id)
+            self._cleanup_temp_config(agent_id)
             return
 
         record.status = "stopping"
@@ -991,6 +1010,7 @@ class NateOhaAcpClient(BaseAcpClient):
                 )
             )
             self._close_event_subscribers(agent_id)
+            self._cleanup_temp_config(agent_id)
             raise AcpClientError(
                 f"Failed to stop nate_OHA process for agent {agent_id!r}: {exc}"
             ) from exc
@@ -1011,6 +1031,7 @@ class NateOhaAcpClient(BaseAcpClient):
             )
         )
         self._close_event_subscribers(agent_id)
+        self._cleanup_temp_config(agent_id)
 
     def get_status(self, agent_id: str) -> AcpAgentStatus:
         """Return a lightweight status snapshot for ``agent_id``.
@@ -1038,21 +1059,40 @@ class NateOhaAcpClient(BaseAcpClient):
             restart_count=record.restart_count,
         )
 
-    def _build_command(self, metadata: AgentMetadata) -> list[str]:
-        """Construct the nate-oha ``acp`` command line for ``metadata``.
+    def _build_command(self, agent_id: str, metadata: AgentMetadata) -> list[str]:
+        """Construct the nate-oha ``acp`` command line for an agent.
 
-        This helper delegates to :func:`build_nate_oha_launch_spec` so that
-        Nate OHA launches are driven by the :class:`RuntimeConfig` /
-        :class:`AgentMetadata` mapping defined for Epic 005 (FR-012/FR-013).
-        The resulting argv has the general form::
+        When a fully resolved :class:`NateOhaConfig` is available on
+        :class:`AgentMetadata`, this helper prefers to launch Nate OHA from
+        that configuration by materialising it into a temporary JSON file
+        via :func:`materialize_nate_oha_config`. In this mode the effective
+        configuration is treated as the single source of truth and **no
+        additional ``--set`` overrides are emitted**.
 
-            <executable> acp --config BASE_CONFIG [--resume ID] [--set ...]
-
-        The per-instance ``executable`` attribute is still honoured so
-        tests and advanced callers can override the binary used while
-        keeping the rest of the launch specification unchanged.
+        For legacy swarms that do not yet persist ``nate_oha_config``, the
+        method falls back to :func:`build_nate_oha_launch_spec`, which
+        implements the base-config-plus-overrides model derived from
+        :class:`RuntimeConfig` and :class:`AgentMetadata`.
         """
 
+        cfg = getattr(metadata, "nate_oha_config", None)
+        conversation_id = metadata.conversation_id or None
+
+        # Preferred path: launch from the persisted effective Nate OHA config.
+        if cfg is not None:
+            config_path = materialize_nate_oha_config(config=cfg)
+            # Track the temporary directory so it can be cleaned up when the
+            # agent is stopped.
+            self._temp_config_dirs[agent_id] = str(config_path.parent)
+
+            argv: list[str] = [self.executable, "acp", "--config", str(config_path)]
+            if conversation_id:
+                argv.extend(["--resume", conversation_id])
+            return argv
+
+        # Legacy path: derive the launch specification from RuntimeConfig and
+        # AgentMetadata. This preserves existing behaviour for swarms created
+        # before Nate OHA config persistence was introduced.
         try:
             spec = build_nate_oha_launch_spec(config=self.config, metadata=metadata)
         except ValueError as exc:
@@ -1118,6 +1158,58 @@ class NateOhaAcpClient(BaseAcpClient):
         if metadata.conversation_id:
             env.setdefault("NATE_NTM_AGENT_CONVERSATION_ID", metadata.conversation_id)
 
+        # When a persisted Nate OHA configuration is available, prefer its
+        # Agent Mail feature settings over the legacy RuntimeConfig /
+        # AgentMetadata mapping. This keeps nate_oha_config as the single
+        # source of truth for launch-time behavior while preserving a
+        # backwards-compatible path for older swarms that do not yet persist
+        # Nate OHA config.
+        cfg = getattr(metadata, "nate_oha_config", None)
+        features = getattr(cfg, "features", None) if cfg is not None else None
+        agent_mail_cfg = getattr(features, "agent_mail", None) if features is not None else None
+
+        if agent_mail_cfg is not None:
+            # Config-driven Agent Mail. When the feature is disabled, do not
+            # inject any AGENT_MAIL_* variables regardless of legacy metadata
+            # fields.
+            if not getattr(agent_mail_cfg, "enabled", False):
+                return env
+
+            project = (getattr(agent_mail_cfg, "project", "") or "").strip()
+            if not project:
+                raise AcpClientError(
+                    "Agent Mail project is not configured in NateOhaConfig.features.agent_mail.project; "
+                    "set it before launching nate_OHA."
+                )
+            env["AGENT_MAIL_PROJECT"] = project
+
+            identity = (getattr(agent_mail_cfg, "agent_identity", "") or "").strip()
+            if not identity:
+                raise AcpClientError(
+                    f"Agent Mail identity is empty for agent {agent_id!r} in NateOhaConfig.features.agent_mail.agent_identity; "
+                    "set it before launching nate_OHA."
+                )
+            env["AGENT_MAIL_AGENT"] = identity
+
+            token = (getattr(agent_mail_cfg, "credentials_ref", "") or "").strip()
+            if not token:
+                raise AcpClientError(
+                    f"Agent Mail token/credentials_ref not configured for agent {agent_id!r} in NateOhaConfig.features.agent_mail.credentials_ref; "
+                    "set it before launching nate_OHA."
+                )
+            env["AGENT_MAIL_TOKEN"] = token
+
+            upstream = (getattr(agent_mail_cfg, "upstream_url", "") or "").strip()
+            if not upstream:
+                raise AcpClientError(
+                    "Agent Mail upstream URL is not configured in NateOhaConfig.features.agent_mail.upstream_url; "
+                    "set it before launching nate_OHA."
+                )
+            env["AGENT_MAIL_UPSTREAM_URL"] = upstream
+
+            return env
+
+        # Legacy behavior for swarms that do not yet persist Nate OHA config.
         # If no Agent Mail identity is configured, leave AGENT_MAIL_* alone
         # and rely solely on the correlation variables above. This keeps
         # dev/test agents that do not use Agent Mail simple.
@@ -1162,6 +1254,31 @@ class NateOhaAcpClient(BaseAcpClient):
         env["AGENT_MAIL_UPSTREAM_URL"] = upstream
 
         return env
+
+    def _cleanup_temp_config(self, agent_id: str) -> None:
+        """Best-effort removal of any materialized Nate OHA config.
+
+        Temporary configuration directories are created when launching agents
+        from a persisted :class:`NateOhaConfig` (see
+        :func:`materialize_nate_oha_config`). They are strictly runtime
+        artifacts and must never be treated as durable project metadata.
+        """
+
+        tmpdir = self._temp_config_dirs.pop(agent_id, None)
+        if not tmpdir:
+            return
+
+        try:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        except Exception:  # pragma: no cover - defensive
+            # Failure to clean up a temporary directory should not fail the
+            # overall agent shutdown path, but we log a warning for
+            # observability.
+            logger.warning(
+                "nate_oha_temp_config_cleanup_failed",
+                extra={"agent_id": agent_id, "path": tmpdir},
+            )
+
 
     def _make_process_event(
         self,

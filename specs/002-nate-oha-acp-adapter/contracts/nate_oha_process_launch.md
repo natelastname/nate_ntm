@@ -64,9 +64,9 @@ These **MUST NOT** conflict with the `AGENT_MAIL_*` variables defined above.
 ## 3. Working Directory and Filesystem
 
 - The nate_OHA process **MUST** be started with a working directory that has access to the project files needed for the agent.
-  - Default: the `nate_ntm` project root, or a project-specific working directory configured in `AgentMetadata.launch_config`.
+  - Default: the `nate_ntm` project root (that is, `RuntimeConfig.project_path`).
 - The adapter **MUST NOT** assume write access outside the project or designated runtime directories.
-- Any per-agent scratch or log directories **SHOULD** live under a project-local root (for example, `.nate_ntm/agents/<agent_id>/`) or another directory agreed in deployment configuration.
+- Any per-agent scratch or log directories **SHOULD** live under a project-local root (for example, within `.nate_ntm/` under the project) or another directory agreed in deployment configuration.
 
 ## 4. Startup Readiness and Health Checks
 

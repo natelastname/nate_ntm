@@ -14,13 +14,14 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 import os
+import socket
 
 import pytest
 
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
 from nate_ntm.runtime.agent_mail_client import FakeAgentMailClient
 from nate_ntm.runtime.adapters import RuntimeAdapters
-from nate_ntm.runtime.acp_client import AcpAgentStatus, AcpClientError, NateOhaAcpClient
+from nate_ntm.runtime.acp_client import AcpAgentStatus, AcpClientError, BaseAcpClient, NateOhaAcpClient
 from nate_ntm.runtime.events import AgentEventSource
 from nate_ntm.runtime.daemon import (
     MetadataAlreadyExistsError,
@@ -105,6 +106,14 @@ def test_runtime_daemon_create_with_real_acp_persists_nate_oha_metadata(tmp_path
     """
 
     project = tmp_path / "project"
+    # These REAL-adapter tests require a running Agent Mail MCP server.
+    try:
+        with socket.create_connection(("127.0.0.1", 8765), timeout=1.0):
+            pass
+    except OSError:
+        pytest.skip("Agent Mail server not available on 127.0.0.1:8765")
+
+
     project.mkdir(parents=True, exist_ok=True)
 
     env = {
@@ -147,6 +156,14 @@ def test_runtime_daemon_create_and_resume_with_real_acp_and_agent_mail(tmp_path:
     exercised by this unit test.
     """
 
+    # These REAL-adapter tests require a running Agent Mail MCP server.
+    try:
+        with socket.create_connection(("127.0.0.1", 8765), timeout=1.0):
+            pass
+    except OSError:
+        pytest.skip("Agent Mail server not available on 127.0.0.1:8765")
+
+
     project = tmp_path / "project"
     project.mkdir(parents=True, exist_ok=True)
 
@@ -174,6 +191,80 @@ def test_runtime_daemon_create_and_resume_with_real_acp_and_agent_mail(tmp_path:
 
     assert meta_after.agent_mail_identity == meta_before.agent_mail_identity
     assert meta_after.conversation_id == meta_before.conversation_id
+
+
+
+def test_runtime_daemon_create_populates_nate_oha_config_for_initial_agents(
+    tmp_path: Path,
+) -> None:
+    """create() eagerly embeds NateOhaConfig into initial agent metadata (T217/T228).
+
+    This exercises the create-mode path using fake adapters and a concrete
+    Nate OHA base configuration, verifying that the derived NateOhaConfig is
+    persisted via SwarmState/AgentState and visible through both the swarm-
+    and per-agent metadata views.
+    """
+
+    project = tmp_path / "project"
+    project.mkdir(parents=True, exist_ok=True)
+
+    # Create a minimal, schema-valid Nate OHA JSON config on disk by
+    # serializing the upstream default configuration. This avoids relying on
+    # any particular sample profile layout while still exercising
+    # load_nate_oha_config/build_effective_nate_oha_config end-to-end.
+    from nate_oha.config import build_default_config
+
+    base_config_path = project / "nate-oha-config.json"
+    base_config = build_default_config()
+    base_config_path.write_text(base_config.model_dump_json(indent=2), encoding="utf-8")
+
+    env = {
+        "NATE_NTM_PROJECT_DIR": str(project),
+        "NATE_NTM_NATE_OHA_CONFIG": str(base_config_path),
+        "NATE_NTM_NATE_OHA_RUNTIME_MODE": "echo",
+    }
+    config = load_runtime_config(project_path=project, env=env)
+
+    # Use a fake Agent Mail adapter and a dummy ACP adapter that does not
+    # interact with the real nate-oha binary. RuntimeDaemon.create only
+    # requires that the ACP client exposes an on_event callback attribute.
+    agent_mail = FakeAgentMailClient(config=config)
+
+    class DummyAcpClient(BaseAcpClient):
+        def start_agent(self, agent_id: str, *, metadata: AgentMetadata) -> None:
+            pass
+
+        async def prompt(self, agent_id: str, prompt: str | None = None) -> str | None:
+            return None
+
+        async def interrupt(self, agent_id: str) -> None:
+            return None
+
+        def stop_agent(self, agent_id: str, *, timeout: float) -> None:
+            pass
+
+        def get_status(self, agent_id: str) -> AcpAgentStatus:
+            return AcpAgentStatus(agent_id=agent_id, state="idle")
+
+    acp = DummyAcpClient()
+    adapters = RuntimeAdapters(agent_mail=agent_mail, acp=acp)
+
+    daemon = RuntimeDaemon.create(config, agent_count=1, adapters=adapters)
+
+    # Swarm and per-agent metadata should both expose a NateOhaConfig snapshot
+    # for the newly created agent.
+    store = MetadataStore(config=config)
+    swarm = store.load_swarm_metadata()
+    meta = store.load_agent_metadata("agent-1")
+
+    assert "agent-1" in swarm.agents
+    swarm_agent = swarm.agents["agent-1"]
+
+    assert meta.nate_oha_config is not None
+    assert swarm_agent.nate_oha_config is not None
+
+    # Swarm- and per-agent views should agree on the serialized configuration.
+    assert meta.nate_oha_config.model_dump() == swarm_agent.nate_oha_config.model_dump()
 
 
 

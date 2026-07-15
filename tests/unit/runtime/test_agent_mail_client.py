@@ -10,6 +10,9 @@ of the migration away from fake adapters.
 from __future__ import annotations
 
 from pathlib import Path
+import socket
+
+import pytest
 
 from nate_ntm.config.runtime_config import load_runtime_config
 from nate_ntm.runtime.agent_mail_client import McpAgentMailClient
@@ -41,6 +44,14 @@ def test_mcp_agent_mail_client_ensure_project_uses_configured_project_key(tmp_pa
     ``SwarmMetadata.agent_mail_project_id`` and propagated into
     ``AGENT_MAIL_PROJECT`` for nate_OHA launches.
     """
+
+    # These tests require a running Agent Mail MCP server.
+    try:
+        with socket.create_connection(("127.0.0.1", 8765), timeout=1.0):
+            pass
+    except OSError:
+        pytest.skip("Agent Mail server not available on 127.0.0.1:8765")
+
 
     # Use an explicit project key that does not look like a path to make
     # the expectation clear and robust. This will be passed through to the

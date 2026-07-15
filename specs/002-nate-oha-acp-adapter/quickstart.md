@@ -103,9 +103,8 @@ In a separate terminal, use the JSON-RPC CLI to inspect runtime and agent state.
 4. **Check on-disk metadata** (optional, for deeper verification):
 
    ```bash
-   cd "$PROJECT_ROOT/.nate_ntm/agents"
-   ls
-   cat agent-1.json | jq .
+   cd "$PROJECT_ROOT/.nate_ntm"
+   cat swarm.json | jq '.agents[] | select(.agent_id=="agent-1")'
    ```
 
    Confirm:
@@ -142,8 +141,9 @@ In a separate terminal, use the JSON-RPC CLI to inspect runtime and agent state.
    - A nate_OHA process is relaunched for the agent.
    - The adapter reuses the same Agent Mail identity and the same persisted OpenHands conversation identifier.
    - If the adapter would derive a different conversation ID than the one
-     stored in `AgentMetadata`, resume fails fast with `RuntimeStartupError`
-     and logs a mismatch to protect conversation continuity.
+     stored for the agent in `SwarmState`/`swarm.json`, resume fails fast with
+     `RuntimeStartupError` and logs a mismatch to protect conversation
+     continuity.
 
 
 3. **Re-inspect agent detail and metadata**:
@@ -151,8 +151,8 @@ In a separate terminal, use the JSON-RPC CLI to inspect runtime and agent state.
    ```bash
    uv run nate-ntm api call agent.get_detail --param agent_id="agent-1" --param max_events=20
 
-   cd "$PROJECT_ROOT/.nate_ntm/agents"
-   cat agent-1.json | jq .conversation_id
+   cd "$PROJECT_ROOT/.nate_ntm"
+   cat swarm.json | jq '.agents[] | select(.agent_id=="agent-1") | .conversation_id'
    ```
 
    Validation criteria (SC-002):

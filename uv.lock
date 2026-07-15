@@ -390,6 +390,7 @@ dependencies = [
     { name = "glom" },
     { name = "json-five" },
     { name = "pydantic" },
+    { name = "typer" },
 ]
 
 [package.metadata]
@@ -407,6 +408,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.13.4,<3" },
     { name = "pyyaml", marker = "extra == 'runtime'", specifier = ">=6.0.3" },
     { name = "remote-pdb", marker = "extra == 'runtime'", specifier = ">=2.1.0" },
+    { name = "typer", specifier = ">=0.26.8" },
 ]
 provides-extras = ["runtime"]
 

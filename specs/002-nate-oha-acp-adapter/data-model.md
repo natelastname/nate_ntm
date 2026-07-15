@@ -54,21 +54,14 @@ Fields and semantics relevant to nate_OHA:
     - The persisted OpenHands conversation identifier that nate_OHA uses for the agent’s underlying work.
     - **MUST** be stable across runtime shutdown/resume (FR-005, SC-002).
     - May be empty only before the first successful conversation is established; once set, it **MUST NOT** be changed arbitrarily.
-- `launch_config: Mapping[str, Any]`
-  - Free-form configuration for launching the ACP runtime on behalf of the agent.
-  - For nate_OHA, this will typically include:
-    - `"acp_adapter"`: one of `"fake"` or `"nate_oha"`.
-    - Optional `"nate_oha_profile"` or similar flags that influence CLI arguments/env (exact keys to be defined alongside implementation).
-- `model: str | None`
-  - Logical model configuration for the agent. For nate_OHA, the underlying model may be further configured inside nate_OHA / OpenHands.
-- `task_description: str | None`
-  - Human-readable description of the agent’s task; surfaced as metadata.
 - `restart_policy: Mapping[str, Any]`
   - Policy controlling restart behavior when nate_OHA processes fail or exit.
   - Interpreted by the runtime/daemon; the adapter surfaces process outcomes.
 - `last_known_status: str`
   - Snapshot status (e.g., `"Idle"`, `"Running"`, `"Failed"`).
   - Updated by the runtime in response to process and ACP events.
+- `nate_oha_config: NateOhaConfig | None`
+  - Fully resolved Nate OHA configuration for this agent. When present this is treated as the source of truth for launch-time behaviour (LLM model, prompts, Agent Mail settings, etc.).
 
 **Validation rules (this feature):**
 
@@ -78,8 +71,7 @@ For any agent configured to use `NateOhaAcpClient` as its ACP adapter:
 2. `conversation_id`:
    - May be empty only before the first successful conversation is created.
    - Once established, **MUST** be reused on subsequent launches and swarm resumes.
-3. `launch_config["acp_adapter"]` **MUST** be set to either `"fake"` or `"nate_oha"`, and `"nate_oha"` **MUST** be selected for production usage.
-4. `restart_policy` **SHOULD** define sensible defaults for maximum retries, backoff behavior, and permanent-failure marking; the adapter and daemon **MUST** respect this policy when deciding whether to restart a failing nate_OHA process.
+3. `restart_policy` **SHOULD** define sensible defaults for maximum retries, backoff behavior, and permanent-failure marking; the adapter and daemon **MUST** respect this policy when deciding whether to restart a failing nate_OHA process.
 
 ## 2. In-memory Process Supervision Records
 
@@ -152,7 +144,7 @@ For each nate_OHA–backed agent:
    - `AgentMetadata` created with:
      - `agent_mail_identity` set to a valid Agent Mail identity.
      - `conversation_id` empty.
-   - `launch_config["acp_adapter"]` set to `"nate_oha"` for production.
+   - The runtime configured with `RuntimeConfig.acp_adapter` (or global `adapter_mode`) resolving to `AdapterKind.REAL` so that `NateOhaAcpClient` is used for production.
 
 2. **First Launch**
    - `NateOhaAcpClient` launches nate_OHA using CLI/env derived from `AgentMetadata` and `SwarmMetadata`.

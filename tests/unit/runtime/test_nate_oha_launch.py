@@ -14,6 +14,7 @@ from nate_ntm.config.runtime_config import load_runtime_config
 from nate_ntm.runtime.metadata_store import AgentMetadata
 from nate_ntm.runtime.nate_oha_launch import (
     NateOhaLaunchSpec,
+    build_effective_nate_oha_config,
     build_nate_oha_launch_spec,
 )
 
@@ -379,3 +380,68 @@ def test_build_nate_oha_launch_spec_with_conversation_and_agent_mail(tmp_path: P
     ]
 
     assert argv[6:] == expected_tail
+
+
+def test_build_effective_nate_oha_config_uses_launch_spec_overrides(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """build_effective_nate_oha_config reuses the launch-spec override mapping.
+
+    This ensures that the effective Nate OHA configuration seen by the
+    runtime is derived from the same base-config-plus-overrides contract
+    that drives the CLI argv construction.
+    """
+
+    project_dir = tmp_path / "project_effective_config"
+    project_dir.mkdir()
+
+    _project_root, base_config = _make_base_paths(project_dir)
+
+    env = {
+        "NATE_NTM_PROJECT_DIR": str(project_dir),
+        "NATE_NTM_NATE_OHA_EXECUTABLE": "nate-oha",
+        "NATE_NTM_NATE_OHA_CONFIG": str(base_config.relative_to(project_dir)),
+        "NATE_NTM_NATE_OHA_RUNTIME_MODE": "agent",
+        "NATE_NTM_LLM_MODEL": "gpt-test-1",
+        "NATE_NTM_LLM_API_KEY": "secret-key",
+        "NATE_NTM_PROMPT_SOUL_CONTENT": "Hello from test",
+        "NATE_NTM_AGENT_MAIL_ENABLED": "true",
+        "NATE_NTM_AGENT_MAIL_PROJECT": "test-project",
+        "NATE_NTM_AGENT_MAIL_URL": "https://agent-mail.invalid/mcp",
+    }
+
+    config = load_runtime_config(env=env)
+    meta = AgentMetadata(
+        agent_id="agent-1",
+        display_name="Agent One",
+        agent_mail_identity="agent-mail-identity",
+        agent_mail_credentials_ref="secret-token-ref",
+        conversation_id="conv-123",
+    )
+
+    spec = build_nate_oha_launch_spec(config=config, metadata=meta)
+    expected_overrides = sorted(spec.iter_overrides())
+
+    calls: dict[str, object] = {}
+    sentinel = object()
+
+    def fake_load_nate_oha_config(base_config_path, overrides=None):
+        calls["base_config_path"] = base_config_path
+        calls["overrides"] = list(overrides) if overrides is not None else None
+        return sentinel
+
+    monkeypatch.setattr(
+        "nate_ntm.runtime.nate_oha_launch.load_nate_oha_config",
+        fake_load_nate_oha_config,
+    )
+
+    result = build_effective_nate_oha_config(config=config, metadata=meta)
+
+    assert result is sentinel
+    assert "base_config_path" in calls
+    assert "overrides" in calls
+    assert Path(calls["base_config_path"]) == spec.base_config
+    assert calls["overrides"] is not None
+    assert sorted(calls["overrides"]) == expected_overrides
+
