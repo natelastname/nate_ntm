@@ -31,14 +31,13 @@ This module does **not** perform higher-level lifecycle logic such as
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, MutableMapping
-
-import json
-import os
-import tempfile
 
 from ..config.runtime_config import RuntimeConfig
 
@@ -48,11 +47,9 @@ __all__ = [
     "MetadataStore",
 ]
 
-
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
-
 
 @dataclass(frozen=True, slots=True)
 class AgentMetadata:
