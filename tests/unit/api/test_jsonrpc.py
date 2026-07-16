@@ -16,9 +16,10 @@ import pytest
 from nate_ntm.api.jsonrpc import JSONRPC_VERSION, dispatch_request
 from nate_ntm.api.server import RuntimeApiServer
 from nate_ntm.config.runtime_config import load_runtime_config
-from nate_ntm.runtime.daemon import RuntimeDaemon
+from nate_ntm.runtime.daemon import RuntimeDaemon, StartupMode
 from nate_ntm.runtime.events import AgentEvent, AgentEventSource, AgentEventStream
-from nate_ntm.runtime.metadata_store import AgentMetadata, MetadataStore, SwarmMetadata
+from nate_ntm.runtime.metadata_store import MetadataStore
+from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 from nate_ntm.runtime.state import AgentRuntimeState, AgentStatus, RuntimeState, RuntimeStatus
 
 
@@ -27,12 +28,12 @@ def _make_daemon(tmp_path: Path) -> RuntimeDaemon:
     project.mkdir(parents=True, exist_ok=True)
     config = load_runtime_config(project_path=project)
 
-    # Construct a minimal in-memory daemon without pre-existing metadata.
+    # Construct a minimal in-memory daemon without pre-existing on-disk state.
     store = MetadataStore(config=config)
     state = RuntimeState(config=config)
 
     now = datetime(2026, 7, 3, 12, 0, 0)
-    swarm = SwarmMetadata(
+    swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
         agent_mail_project_id="mail-project-1",
@@ -43,9 +44,9 @@ def _make_daemon(tmp_path: Path) -> RuntimeDaemon:
     return RuntimeDaemon(
         config=config,
         metadata_store=store,
-        swarm_metadata=swarm,
+        swarm_state=swarm,
         state=state,
-        startup_mode=None,  # type: ignore[arg-type]
+        startup_mode=StartupMode.RESUME,
     )
 
 
@@ -70,26 +71,17 @@ def test_runtime_get_status_jsonrpc_envelope(tmp_path: Path) -> None:
     result = response["result"]
     assert result["status"] == RuntimeStatus.RUNNING.value
     assert result["project_path"] == str(daemon.config.project_path)
-    assert result["swarm_id"] == daemon.swarm_metadata.swarm_id
+    assert result["swarm_id"] == daemon.swarm_state.swarm_id
 
 
 def test_agent_get_detail_success_and_unknown_agent_error(tmp_path: Path) -> None:
     daemon = _make_daemon(tmp_path)
 
-    # Attach metadata and runtime state for a single agent with an
+    # Attach durable state and runtime state for a single agent with an
     # in-memory event stream to exercise serialization.
-    base_swarm = daemon.swarm_metadata
-    agent_meta = AgentMetadata(agent_id="agent-1", display_name="Agent One")
-    daemon.swarm_metadata = SwarmMetadata(
-        swarm_id=base_swarm.swarm_id,
-        project_path=base_swarm.project_path,
-        agent_mail_project_id=base_swarm.agent_mail_project_id,
-        created_at=base_swarm.created_at,
-        last_updated_at=base_swarm.last_updated_at,
-        config_version=base_swarm.config_version,
-        agents={"agent-1": agent_meta},
-        runtime_options=base_swarm.runtime_options,
-    )
+    base_swarm = daemon.swarm_state
+    agent_meta = AgentState(agent_id="agent-1", display_name="Agent One")
+    daemon.swarm_state = base_swarm.model_copy(update={"agents": {"agent-1": agent_meta}})
 
     stream = AgentEventStream(agent_id="agent-1", max_events=10)
     e1 = AgentEvent(

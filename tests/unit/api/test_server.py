@@ -13,9 +13,10 @@ from datetime import datetime
 import pytest
 
 from nate_ntm.config.runtime_config import load_runtime_config
-from nate_ntm.runtime.daemon import RuntimeDaemon
+from nate_ntm.runtime.daemon import RuntimeDaemon, StartupMode
 from nate_ntm.runtime.events import AgentEvent, AgentEventSource, AgentEventStream
-from nate_ntm.runtime.metadata_store import AgentMetadata, MetadataStore, SwarmMetadata
+from nate_ntm.runtime.metadata_store import MetadataStore
+from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 from nate_ntm.runtime.state import AgentRuntimeState, AgentStatus, RuntimeState, RuntimeStatus
 from nate_ntm.api.server import RuntimeApiServer
 
@@ -25,13 +26,14 @@ def _make_daemon(tmp_path: Path) -> RuntimeDaemon:
     project.mkdir(parents=True, exist_ok=True)
     config = load_runtime_config(project_path=project)
 
-    # Construct a minimal in-memory daemon without pre-existing metadata.
+    # Construct a minimal in-memory daemon without pre-existing on-disk state.
     # This is sufficient for testing the `RuntimeApiServer` association.
     store = MetadataStore(config=config)
     state = RuntimeState(config=config)
     from datetime import datetime
+
     now = datetime(2026, 7, 3, 12, 0, 0)
-    swarm = SwarmMetadata(
+    swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
         agent_mail_project_id="mail-project-1",
@@ -42,9 +44,9 @@ def _make_daemon(tmp_path: Path) -> RuntimeDaemon:
     return RuntimeDaemon(
         config=config,
         metadata_store=store,
-        swarm_metadata=swarm,
+        swarm_state=swarm,
         state=state,
-        startup_mode=None,  # type: ignore[arg-type]
+        startup_mode=StartupMode.RESUME,
     )
 
 
@@ -64,7 +66,7 @@ def test_runtime_api_server_get_runtime_status_delegates_to_daemon(tmp_path: Pat
 
     assert payload["status"] == RuntimeStatus.RUNNING.value
     assert payload["project_path"] == str(daemon.config.project_path)
-    assert payload["swarm_id"] == daemon.swarm_metadata.swarm_id
+    assert payload["swarm_id"] == daemon.swarm_state.swarm_id
 
     counts = payload["agent_counts"]
     assert counts["total"] == 2
@@ -76,19 +78,10 @@ def test_runtime_api_server_get_runtime_status_delegates_to_daemon(tmp_path: Pat
 def test_runtime_api_server_get_swarm_overview_delegates_to_daemon(tmp_path: Path) -> None:
     daemon = _make_daemon(tmp_path)
 
-    # Attach metadata and runtime state for a single agent.
-    base_swarm = daemon.swarm_metadata
-    agent_meta = AgentMetadata(agent_id="agent-1", display_name="Agent One")
-    daemon.swarm_metadata = SwarmMetadata(
-        swarm_id=base_swarm.swarm_id,
-        project_path=base_swarm.project_path,
-        agent_mail_project_id=base_swarm.agent_mail_project_id,
-        created_at=base_swarm.created_at,
-        last_updated_at=base_swarm.last_updated_at,
-        config_version=base_swarm.config_version,
-        agents={"agent-1": agent_meta},
-        runtime_options=base_swarm.runtime_options,
-    )
+    # Attach durable state and runtime state for a single agent.
+    base_swarm = daemon.swarm_state
+    agent_meta = AgentState(agent_id="agent-1", display_name="Agent One")
+    daemon.swarm_state = base_swarm.model_copy(update={"agents": {"agent-1": agent_meta}})
 
     daemon.state.agents = {
         "agent-1": AgentRuntimeState(agent_id="agent-1", status=AgentStatus.RUNNING)
@@ -99,7 +92,7 @@ def test_runtime_api_server_get_swarm_overview_delegates_to_daemon(tmp_path: Pat
 
     overview = server.get_swarm_overview()
 
-    assert overview["swarm_id"] == daemon.swarm_metadata.swarm_id
+    assert overview["swarm_id"] == daemon.swarm_state.swarm_id
     assert overview["runtime_status"] == RuntimeStatus.RUNNING.value
     assert overview["agent_counts"]["total"] == 1
 
@@ -158,25 +151,16 @@ def test_runtime_api_server_shutdown_runtime_rejects_when_not_running(tmp_path: 
 def test_runtime_api_server_get_agent_detail_returns_metadata_and_events(tmp_path: Path) -> None:
     daemon = _make_daemon(tmp_path)
 
-    # Attach metadata and runtime state for a single agent, including an
+    # Attach durable state and runtime state for a single agent, including an
     # in-memory event stream with a couple of events.
-    base_swarm = daemon.swarm_metadata
-    agent_meta = AgentMetadata(
+    base_swarm = daemon.swarm_state
+    agent_meta = AgentState(
         agent_id="agent-1",
         display_name="Agent One",
         agent_mail_identity="mail-1",
         conversation_id="conv-1",
     )
-    daemon.swarm_metadata = SwarmMetadata(
-        swarm_id=base_swarm.swarm_id,
-        project_path=base_swarm.project_path,
-        agent_mail_project_id=base_swarm.agent_mail_project_id,
-        created_at=base_swarm.created_at,
-        last_updated_at=base_swarm.last_updated_at,
-        config_version=base_swarm.config_version,
-        agents={"agent-1": agent_meta},
-        runtime_options=base_swarm.runtime_options,
-    )
+    daemon.swarm_state = base_swarm.model_copy(update={"agents": {"agent-1": agent_meta}})
 
     stream = AgentEventStream(agent_id="agent-1", max_events=10)
     e1 = AgentEvent(

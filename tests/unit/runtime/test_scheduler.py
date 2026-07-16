@@ -11,9 +11,9 @@ from datetime import datetime
 
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
 from nate_ntm.runtime.agents import AgentSupervisor
-from nate_ntm.runtime.metadata_store import AgentMetadata, SwarmMetadata
 from nate_ntm.runtime.scheduler import RuntimeScheduler
 from nate_ntm.runtime.state import AgentRuntimeState, AgentStatus, RuntimeState
+from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 
 
 def _make_runtime_state(config: RuntimeConfig) -> RuntimeState:
@@ -26,11 +26,11 @@ def _make_config(project_root) -> RuntimeConfig:
     return load_runtime_config(project_path=project_root)
 
 
-def _make_swarm_metadata(
-    config: RuntimeConfig, *, agents: dict[str, AgentMetadata] | None = None
-) -> SwarmMetadata:
+def _make_swarm_state(
+    config: RuntimeConfig, *, agents: dict[str, AgentState] | None = None
+) -> SwarmState:
     now = datetime(2026, 7, 3, 12, 0, 0)
-    return SwarmMetadata(
+    return SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
         agent_mail_project_id="",
@@ -45,14 +45,14 @@ def test_scheduler_start_registers_and_launches_agents_via_supervisor(tmp_path) 
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentMetadata(agent_id="a1", display_name="Agent One")
-    swarm = _make_swarm_metadata(config, agents={"a1": a1})
+    a1 = AgentState(agent_id="a1", display_name="Agent One")
+    swarm = _make_swarm_state(config, agents={"a1": a1})
 
-    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+    supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
     scheduler = RuntimeScheduler(
         config=config,
         state=state,
-        swarm_metadata=swarm,
+        swarm_state=swarm,
         agent_supervisor=supervisor,
     )
 
@@ -75,14 +75,14 @@ def test_scheduler_start_is_idempotent(tmp_path) -> None:
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentMetadata(agent_id="a1", display_name="Agent One")
-    swarm = _make_swarm_metadata(config, agents={"a1": a1})
+    a1 = AgentState(agent_id="a1", display_name="Agent One")
+    swarm = _make_swarm_state(config, agents={"a1": a1})
 
-    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+    supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
     scheduler = RuntimeScheduler(
         config=config,
         state=state,
-        swarm_metadata=swarm,
+        swarm_state=swarm,
         agent_supervisor=supervisor,
     )
 
@@ -101,14 +101,14 @@ def test_scheduler_stop_clears_running_flag(tmp_path) -> None:
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentMetadata(agent_id="a1", display_name="Agent One")
-    swarm = _make_swarm_metadata(config, agents={"a1": a1})
+    a1 = AgentState(agent_id="a1", display_name="Agent One")
+    swarm = _make_swarm_state(config, agents={"a1": a1})
 
-    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+    supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
     scheduler = RuntimeScheduler(
         config=config,
         state=state,
-        swarm_metadata=swarm,
+        swarm_state=swarm,
         agent_supervisor=supervisor,
     )
 
@@ -130,10 +130,10 @@ def test_scheduler_respects_preseeded_runtime_state(tmp_path) -> None:
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    # Two agents are configured in metadata, but one already has runtime state.
-    a1 = AgentMetadata(agent_id="a1", display_name="Agent One")
-    a2 = AgentMetadata(agent_id="a2", display_name="Agent Two")
-    swarm = _make_swarm_metadata(config, agents={"a1": a1, "a2": a2})
+    # Two agents are configured in the swarm state, but one already has runtime state.
+    a1 = AgentState(agent_id="a1", display_name="Agent One")
+    a2 = AgentState(agent_id="a2", display_name="Agent Two")
+    swarm = _make_swarm_state(config, agents={"a1": a1, "a2": a2})
 
     preexisting = AgentRuntimeState(
         agent_id="a1",
@@ -141,11 +141,11 @@ def test_scheduler_respects_preseeded_runtime_state(tmp_path) -> None:
     )
     state.agents["a1"] = preexisting
 
-    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+    supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
     scheduler = RuntimeScheduler(
         config=config,
         state=state,
-        swarm_metadata=swarm,
+        swarm_state=swarm,
         agent_supervisor=supervisor,
     )
 
@@ -166,14 +166,14 @@ def test_scheduler_mark_agent_failed_delegates_and_updates_state(tmp_path) -> No
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentMetadata(agent_id="a1", display_name="Agent One")
-    swarm = _make_swarm_metadata(config, agents={"a1": a1})
+    a1 = AgentState(agent_id="a1", display_name="Agent One")
+    swarm = _make_swarm_state(config, agents={"a1": a1})
 
-    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+    supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
     scheduler = RuntimeScheduler(
         config=config,
         state=state,
-        swarm_metadata=swarm,
+        swarm_state=swarm,
         agent_supervisor=supervisor,
     )
 
@@ -193,14 +193,14 @@ def test_scheduler_restart_agent_delegates_and_marks_idle(tmp_path) -> None:
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentMetadata(agent_id="a1", display_name="Agent One")
-    swarm = _make_swarm_metadata(config, agents={"a1": a1})
+    a1 = AgentState(agent_id="a1", display_name="Agent One")
+    swarm = _make_swarm_state(config, agents={"a1": a1})
 
-    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+    supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
     scheduler = RuntimeScheduler(
         config=config,
         state=state,
-        swarm_metadata=swarm,
+        swarm_state=swarm,
         agent_supervisor=supervisor,
     )
 
@@ -233,11 +233,11 @@ def test_scheduler_enqueues_mail_received_events_from_unread_flags(tmp_path) -> 
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentMetadata(agent_id="a1", display_name="Agent One")
-    a2 = AgentMetadata(agent_id="a2", display_name="Agent Two")
-    swarm = _make_swarm_metadata(config, agents={"a1": a1, "a2": a2})
+    a1 = AgentState(agent_id="a1", display_name="Agent One")
+    a2 = AgentState(agent_id="a2", display_name="Agent Two")
+    swarm = _make_swarm_state(config, agents={"a1": a1, "a2": a2})
 
-    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+    supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
 
     # Seed the fake Agent Mail client with an unread message for ``a1``
     # only. ``a2`` remains without unread mail.
@@ -248,7 +248,7 @@ def test_scheduler_enqueues_mail_received_events_from_unread_flags(tmp_path) -> 
     scheduler = RuntimeScheduler(
         config=config,
         state=state,
-        swarm_metadata=swarm,
+        swarm_state=swarm,
         agent_supervisor=supervisor,
         agent_mail_client=mail_client,
     )
@@ -287,10 +287,10 @@ def test_scheduler_unread_mail_poll_is_idempotent(tmp_path) -> None:
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentMetadata(agent_id="a1", display_name="Agent One")
-    swarm = _make_swarm_metadata(config, agents={"a1": a1})
+    a1 = AgentState(agent_id="a1", display_name="Agent One")
+    swarm = _make_swarm_state(config, agents={"a1": a1})
 
-    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+    supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
 
     mail_client = FakeAgentMailClient(config=config)
     mail_client.ensure_project()
@@ -299,7 +299,7 @@ def test_scheduler_unread_mail_poll_is_idempotent(tmp_path) -> None:
     scheduler = RuntimeScheduler(
         config=config,
         state=state,
-        swarm_metadata=swarm,
+        swarm_state=swarm,
         agent_supervisor=supervisor,
         agent_mail_client=mail_client,
     )

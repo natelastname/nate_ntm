@@ -33,7 +33,8 @@ from nate_ntm.api.client import JsonRpcHttpClient
 from nate_ntm.api.jsonrpc import JSONRPC_VERSION
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
 from nate_ntm.runtime.daemon import StartupMode
-from nate_ntm.runtime.metadata_store import AgentMetadata, MetadataStore, SwarmMetadata
+from nate_ntm.runtime.metadata_store import MetadataStore
+from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 from nate_ntm.runtime.runner import (
     RuntimeControlContext,
     create_runtime_control_context,
@@ -58,8 +59,8 @@ def _make_resume_config_and_metadata(tmp_path: Path) -> RuntimeConfig:
 
     now = datetime(2026, 7, 3, 12, 0, 0)
 
-    agent = AgentMetadata(agent_id="nav-1", display_name="Navigator 1")
-    swarm = SwarmMetadata(
+    agent = AgentState(agent_id="nav-1", display_name="Navigator 1")
+    swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
         agent_mail_project_id="mail-project-1",
@@ -68,8 +69,7 @@ def _make_resume_config_and_metadata(tmp_path: Path) -> RuntimeConfig:
         agents={agent.agent_id: agent},
     )
 
-    store.save_swarm_metadata(swarm)
-    store.save_agent_metadata(agent)
+    store.save_swarm_state(swarm)
 
     return config
 

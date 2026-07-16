@@ -26,7 +26,8 @@ from typing import Tuple
 from nate_ntm.api.server import RuntimeApiServer
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
 from nate_ntm.runtime.daemon import RuntimeDaemon
-from nate_ntm.runtime.metadata_store import AgentMetadata, MetadataStore, SwarmMetadata
+from nate_ntm.runtime.metadata_store import MetadataStore
+from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 from nate_ntm.runtime.state import AgentRuntimeState, AgentStatus, RuntimeStatus
 
 
@@ -52,26 +53,26 @@ def _make_started_daemon_with_agents(
 
     now = datetime(2026, 7, 3, 12, 0, 0)
 
-    # Define three agents with minimal persisted metadata. The runtime
+    # Define three agents with minimal persisted state. The runtime
     # will use ``RuntimeState.agents`` for live status; these records
-    # ensure that swarm-level metadata is also present and consistent.
-    agent_running = AgentMetadata(
+    # ensure that swarm-level state is also present and consistent.
+    agent_running = AgentState(
         agent_id="nav-1",
         display_name="Navigator 1",
         last_known_status="Running",
     )
-    agent_idle = AgentMetadata(
+    agent_idle = AgentState(
         agent_id="nav-2",
         display_name="Navigator 2",
         last_known_status="Idle",
     )
-    agent_failed = AgentMetadata(
+    agent_failed = AgentState(
         agent_id="nav-3",
         display_name="Navigator 3",
         last_known_status="Failed",
     )
 
-    swarm = SwarmMetadata(
+    swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
         agent_mail_project_id="mail-project-1",
@@ -84,12 +85,9 @@ def _make_started_daemon_with_agents(
         },
     )
 
-    # Persist swarm and agent metadata to disk to exercise the
-    # MetadataStore layout and SwarmMetadata validation on resume.
-    store.save_swarm_metadata(swarm)
-    store.save_agent_metadata(agent_running)
-    store.save_agent_metadata(agent_idle)
-    store.save_agent_metadata(agent_failed)
+    # Persist swarm state to disk to exercise the
+    # MetadataStore layout and SwarmState validation on resume.
+    store.save_swarm_state(swarm)
 
     # Construct a RuntimeDaemon in resume mode, which will re-load and
     # validate the swarm metadata we just wrote.
@@ -306,9 +304,9 @@ def test_scheduler_failure_and_restart_are_reflected_in_runtime_api(tmp_path: Pa
 
     now = datetime(2026, 7, 3, 12, 0, 0)
 
-    agent = AgentMetadata(agent_id="nav-1", display_name="Navigator 1")
+    agent = AgentState(agent_id="nav-1", display_name="Navigator 1")
 
-    swarm = SwarmMetadata(
+    swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
         agent_mail_project_id="mail-project-1",
@@ -317,8 +315,7 @@ def test_scheduler_failure_and_restart_are_reflected_in_runtime_api(tmp_path: Pa
         agents={agent.agent_id: agent},
     )
 
-    store.save_swarm_metadata(swarm)
-    store.save_agent_metadata(agent)
+    store.save_swarm_state(swarm)
 
     daemon = RuntimeDaemon.resume(config)
     assert daemon.scheduler is not None

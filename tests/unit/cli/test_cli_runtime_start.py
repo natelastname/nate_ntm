@@ -14,7 +14,8 @@ from typer.testing import CliRunner
 
 from nate_ntm.cli import app
 from nate_ntm.config.runtime_config import load_runtime_config
-from nate_ntm.runtime.metadata_store import MetadataStore, SwarmMetadata
+from nate_ntm.runtime.metadata_store import MetadataStore
+from nate_ntm.runtime.swarm_state import SwarmState
 
 
 runner = CliRunner()
@@ -30,14 +31,14 @@ def _init_project_with_metadata(tmp_path: Path) -> Path:
     from datetime import datetime
 
     now = datetime(2026, 7, 3, 12, 0, 0)
-    swarm = SwarmMetadata(
+    swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
         agent_mail_project_id="mail-project-1",
         created_at=now,
         last_updated_at=now,
     )
-    store.save_swarm_metadata(swarm)
+    store.save_swarm_state(swarm)
 
     return project
 
@@ -94,12 +95,12 @@ def test_runtime_start_create_without_metadata_succeeds_and_writes_swarm(tmp_pat
 
     assert result.exit_code == 0
 
-    # Swarm metadata should now exist and be loadable.
+    # Swarm state should now exist and be loadable.
     config = load_runtime_config(project_path=project)
     store = MetadataStore(config=config)
     swarm_path = store.metadata_dir / "swarm.json"
     assert swarm_path.is_file()
-    swarm = store.load_swarm_metadata()
+    swarm = store.load_swarm_state()
     assert swarm.project_path == config.project_path
     assert swarm.swarm_id == config.swarm_id
 
