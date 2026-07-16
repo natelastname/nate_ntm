@@ -203,14 +203,14 @@ class NateOhaLaunchSpec:
 
 
 from ..config.runtime_config import RuntimeConfig
-from .metadata_store import AgentMetadata
+from .swarm_state import AgentState
 from .nate_oha_config_compat import NateOhaConfig, load_nate_oha_config
 
 
 def build_nate_oha_launch_spec(
     *,
     config: RuntimeConfig,
-    metadata: AgentMetadata,
+    metadata: AgentState,
 ) -> NateOhaLaunchSpec:
     """Construct a :class:`NateOhaLaunchSpec` from runtime config and metadata.
 
@@ -228,9 +228,9 @@ def build_nate_oha_launch_spec(
       configuration passed via ``--config``.
     * :attr:`RuntimeConfig.nate_oha_runtime_mode` (when set) selects the
       runtime mode; callers may enforce additional defaults.
-    * :class:`AgentMetadata.conversation_id` (when non-empty) is treated
-      as an opaque, ACP-owned session identifier and passed through to
-      Nate OHA via ``--resume``.
+    * :class:`AgentState.conversation_id` (when non-empty) is treated as
+      an opaque, ACP-owned session identifier and passed through to Nate
+      OHA via ``--resume``.
     * LLM and prompt overrides are taken from
       :attr:`RuntimeConfig.llm_model`, :attr:`RuntimeConfig.llm_api_key`,
       and :attr:`RuntimeConfig.prompt_soul_content`.
@@ -238,7 +238,7 @@ def build_nate_oha_launch_spec(
       :attr:`RuntimeConfig.agent_mail_enabled`,
       :attr:`RuntimeConfig.agent_mail_project`,
       :attr:`RuntimeConfig.agent_mail_upstream_url`, and the per-agent
-      identity and credentials ref stored in :class:`AgentMetadata`.
+      identity and credentials ref stored in :class:`AgentState`.
     """
 
     if config.nate_oha_config_path is None:
@@ -308,7 +308,7 @@ def build_nate_oha_launch_spec(
     )
 
 
-def build_effective_nate_oha_config(*, config: RuntimeConfig, metadata: AgentMetadata) -> NateOhaConfig:
+def build_effective_nate_oha_config(*, config: RuntimeConfig, metadata: AgentState) -> NateOhaConfig:
     """Build the effective :class:`NateOhaConfig` for an agent.
 
     This helper mirrors the base-config-plus-overrides model used by
@@ -325,8 +325,8 @@ def build_effective_nate_oha_config(*, config: RuntimeConfig, metadata: AgentMet
       which corresponds exactly to the ``--set path=value`` arguments that
       would be passed to the Nate OHA CLI.
     * The ACP-owned conversation/session identifier is **not** embedded in
-    the configuration; it remains a separate field on
-      :class:`AgentMetadata` / :class:`AgentState`.
+      the configuration; it remains a separate field on
+      :class:`AgentState`.
     """
 
     spec = build_nate_oha_launch_spec(config=config, metadata=metadata)

@@ -24,7 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .nate_oha_config_compat import NateOhaConfig
 
@@ -68,6 +68,14 @@ class AgentState(BaseModel):
     # this to be required once all callers populate it.
     nate_oha_config: Optional[NateOhaConfig] = None
 
+    @field_validator("agent_id", "display_name")
+    @classmethod
+    def _must_not_be_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be empty")
+        return value
+
 
 class SwarmState(BaseModel):
     """Durable, single-object representation of an entire swarm.
@@ -106,6 +114,19 @@ class SwarmState(BaseModel):
     # methods. These keep call sites slightly more self-documenting
     # without taking on responsibility for filesystem I/O.
 
+    @field_validator("swarm_id")
+    @classmethod
+    def _swarm_id_must_not_be_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be empty")
+        return value
+
+    @field_validator("project_path")
+    @classmethod
+    def _normalize_project_path(cls, value: Path) -> Path:
+        return value.expanduser().resolve()
+
     @classmethod
     def from_json(cls, data: str) -> "SwarmState":
         """Parse a :class:`SwarmState` from a JSON string."""
@@ -116,3 +137,38 @@ class SwarmState(BaseModel):
         """Render this :class:`SwarmState` as a JSON string."""
 
         return self.model_dump_json(indent=indent)
+
+    # ------------------------------------------------------------------
+    # Invariant checks
+    # ------------------------------------------------------------------
+
+    def validate(self, *, expected_project_path: Path, expected_swarm_id: str) -> None:
+        """Validate this state against runtime-level invariants.
+
+        The checks mirror the older :class:`SwarmMetadata.validate` helper
+        so that callers (for example, :class:`MetadataStore` and
+        :class:`RuntimeDaemon`) can rely on consistent behaviour when
+        loading persisted state:
+
+        * ``swarm_id`` must match ``expected_swarm_id``.
+        * ``project_path`` (after normalization) must match
+          ``expected_project_path``.
+
+        :raises ValueError: if any invariant is violated.
+        """
+
+        normalized_expected = expected_project_path.expanduser().resolve()
+
+        if self.swarm_id != expected_swarm_id:
+            raise ValueError(
+                f"SwarmState.swarm_id {self.swarm_id!r} does not match expected "
+                f"swarm_id {expected_swarm_id!r}"
+            )
+
+        if self.project_path != normalized_expected:
+            raise ValueError(
+                "SwarmState.project_path "
+                f"{str(self.project_path)!r} does not match expected project_path "
+                f"{str(normalized_expected)!r}"
+            )
+

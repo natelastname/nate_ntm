@@ -3,7 +3,7 @@
 This module defines a minimal :class:`RuntimeScheduler` abstraction for
 US1. Its responsibilities in this slice are intentionally narrow:
 
-* Bridge between :class:`SwarmMetadata` (configured agents) and
+* Bridge between :class:`SwarmState` (configured agents) and
   :class:`RuntimeState` by asking :class:`AgentSupervisor` to ensure all
   agents are registered.
 * Provide a place for future event loop and integration wiring without
@@ -24,7 +24,7 @@ import logging
 from ..config.runtime_config import RuntimeConfig
 from .agent_mail_client import BaseAgentMailClient
 from .agents import AgentSupervisor
-from .metadata_store import SwarmMetadata
+from .swarm_state import SwarmState
 from .state import RuntimeState
 
 __all__ = ["RuntimeScheduler"]
@@ -44,7 +44,7 @@ class RuntimeScheduler:
 
     config: RuntimeConfig
     state: RuntimeState
-    swarm_metadata: SwarmMetadata
+    swarm_state: SwarmState
     agent_supervisor: AgentSupervisor
 
     # Optional Agent Mail adapter used to poll for unread messages at
@@ -62,8 +62,8 @@ class RuntimeScheduler:
         For US1 this wires configured agents into runtime state **and**
         simulates an initial "launch" via :class:`AgentSupervisor`:
 
-        * All agents described in :class:`SwarmMetadata` gain
-          corresponding entries in :class:`RuntimeState.agents`.
+        * All agents described in :class:`SwarmState` gain corresponding
+          entries in :class:`RuntimeState.agents`.
         * Newly registered agents are transitioned from ``Starting`` to
           ``Idle`` with a lightweight placeholder subprocess handle.
 
@@ -79,7 +79,7 @@ class RuntimeScheduler:
             logger.debug(
                 "scheduler_start_idempotent",
                 extra={
-                    "swarm_id": self.swarm_metadata.swarm_id,
+                    "swarm_id": self.swarm_state.swarm_id,
                     "project_path": str(self.config.project_path),
                 },
             )
@@ -92,7 +92,7 @@ class RuntimeScheduler:
         logger.info(
             "scheduler_started",
             extra={
-                "swarm_id": self.swarm_metadata.swarm_id,
+                "swarm_id": self.swarm_state.swarm_id,
                 "project_path": str(self.config.project_path),
                 "agent_count": len(self.state.agents),
             },
@@ -103,8 +103,8 @@ class RuntimeScheduler:
         # runtime events. This allows higher layers (and future scheduler
         # logic) to treat those agents as having work available on
         # resume.
-        if self.agent_mail_client is not None and self.swarm_metadata.agents:
-            agent_ids = list(self.swarm_metadata.agents.keys())
+        if self.agent_mail_client is not None and self.swarm_state.agents:
+            agent_ids = list(self.swarm_state.agents.keys())
             flags = self.agent_mail_client.get_unread_mail_flags(agent_ids)
             for agent_id, has_unread in flags.items():
                 if not has_unread:
@@ -118,7 +118,7 @@ class RuntimeScheduler:
                 logger.debug(
                     "scheduler_unread_mail_enqueued",
                     extra={
-                        "swarm_id": self.swarm_metadata.swarm_id,
+                        "swarm_id": self.swarm_state.swarm_id,
                         "project_path": str(self.config.project_path),
                         "agent_id": agent_id,
                     },
@@ -138,7 +138,7 @@ class RuntimeScheduler:
             logger.debug(
                 "scheduler_stop_idempotent",
                 extra={
-                    "swarm_id": self.swarm_metadata.swarm_id,
+                    "swarm_id": self.swarm_state.swarm_id,
                     "project_path": str(self.config.project_path),
                 },
             )
@@ -148,7 +148,7 @@ class RuntimeScheduler:
         logger.info(
             "scheduler_stopped",
             extra={
-                "swarm_id": self.swarm_metadata.swarm_id,
+                "swarm_id": self.swarm_state.swarm_id,
                 "project_path": str(self.config.project_path),
             },
         )
@@ -168,7 +168,7 @@ class RuntimeScheduler:
         logger.warning(
             "scheduler_agent_failed",
             extra={
-                "swarm_id": self.swarm_metadata.swarm_id,
+                "swarm_id": self.swarm_state.swarm_id,
                 "project_path": str(self.config.project_path),
                 "agent_id": agent_id,
                 "error": error,
@@ -187,7 +187,7 @@ class RuntimeScheduler:
         logger.info(
             "scheduler_agent_restart_requested",
             extra={
-                "swarm_id": self.swarm_metadata.swarm_id,
+                "swarm_id": self.swarm_state.swarm_id,
                 "project_path": str(self.config.project_path),
                 "agent_id": agent_id,
             },

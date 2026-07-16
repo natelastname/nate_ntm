@@ -3,8 +3,8 @@
 This module provides the *internal* interfaces for managing agents within a
 single-swarm runtime process. It is intentionally conservative for US1:
 
-* It wires :class:`AgentMetadata` from the persisted swarm description
-  into :class:`AgentRuntimeState` entries in :class:`RuntimeState`.
+* It wires :class:`AgentState` from the persisted swarm description into
+  :class:`AgentRuntimeState` entries in :class:`RuntimeState`.
 * It creates per-agent :class:`~nate_ntm.runtime.events.AgentEventStream`
   instances so that later user stories can attach event streaming without
   changing the basic wiring.
@@ -24,7 +24,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 from ..config.runtime_config import RuntimeConfig
 from .events import AgentEvent, AgentEventSource, AgentEventStream
-from .metadata_store import AgentMetadata, SwarmMetadata
+from .swarm_state import AgentState, SwarmState
 from .state import AgentRuntimeState, AgentStatus, RuntimeState
 
 __all__ = ["AgentSupervisor"]
@@ -35,7 +35,7 @@ class AgentSupervisor:
     """Manage in-memory runtime state for agents.
 
     For US1 this focuses on establishing and maintaining the mapping
-    between persisted :class:`AgentMetadata` records and
+    between persisted :class:`AgentState` records and
     :class:`AgentRuntimeState` entries in :class:`RuntimeState`.
 
     Later phases will extend this class to:
@@ -43,12 +43,13 @@ class AgentSupervisor:
     * Launch and supervise agent subprocesses.
     * Establish and refresh ACP connections.
     * Surface subprocess/ACP events into the scheduler.
-    * Apply restart policies based on :class:`AgentMetadata.restart_policy`.
+    * Apply restart policies based on :class:`AgentState.restart_policy` (or
+      equivalent policy fields).
     """
 
     config: RuntimeConfig
     state: RuntimeState
-    swarm_metadata: SwarmMetadata
+    swarm_state: SwarmState
 
     # Optional callback invoked whenever a new AgentEvent is appended to an
     # agent's in-memory event stream. This allows higher-level components
@@ -108,18 +109,18 @@ class AgentSupervisor:
         if self.on_agent_event is not None:
             self.on_agent_event(event)
 
-    def iter_configured_agents(self) -> Iterable[AgentMetadata]:
-        """Iterate over :class:`AgentMetadata` records from the swarm.
+    def iter_configured_agents(self) -> Iterable[AgentState]:
+        """Iterate over :class:`AgentState` records from the swarm.
 
-        This is a thin wrapper over ``swarm_metadata.agents.values()``
-        that exists primarily to keep the call-sites within this module
-        clear and testable.
+        This is a thin wrapper over ``swarm_state.agents.values()`` that
+        exists primarily to keep the call-sites within this module clear
+        and testable.
         """
 
-        return self.swarm_metadata.agents.values()
+        return self.swarm_state.agents.values()
 
-    def ensure_agent_runtime_state(self, metadata: AgentMetadata) -> AgentRuntimeState:
-        """Ensure that ``RuntimeState.agents`` has an entry for ``metadata``.
+    def ensure_agent_runtime_state(self, agent_state: AgentState) -> AgentRuntimeState:
+        """Ensure that ``RuntimeState.agents`` has an entry for ``agent_state``.
 
         If a runtime state for this agent already exists, it is returned
         unchanged. Otherwise a new :class:`AgentRuntimeState` instance is
@@ -127,7 +128,7 @@ class AgentSupervisor:
         :class:`AgentEventStream`.
         """
 
-        agent_id = metadata.agent_id
+        agent_id = agent_state.agent_id
 
         existing = self.state.agents.get(agent_id)
         if existing is not None:
@@ -147,7 +148,7 @@ class AgentSupervisor:
 
         This is the primary entry point used by the scheduler/daemon
         during startup. It walks the agents defined in
-        :class:`SwarmMetadata` and ensures that each has a corresponding
+        :class:`SwarmState` and ensures that each has a corresponding
         :class:`AgentRuntimeState` in :class:`RuntimeState`.
 
         Existing runtime entries are left untouched so that tests (and
@@ -155,8 +156,8 @@ class AgentSupervisor:
         registration occurs.
         """
 
-        for metadata in self.iter_configured_agents():
-            self.ensure_agent_runtime_state(metadata)
+        for agent_state in self.iter_configured_agents():
+            self.ensure_agent_runtime_state(agent_state)
 
 
     def append_agent_event(self, event: AgentEvent) -> None:
@@ -168,17 +169,17 @@ class AgentSupervisor:
         :attr:`BaseAcpClient.on_event`.
 
         When the event's ``agent_id`` corresponds to a configured agent in
-        :class:`SwarmMetadata`, a :class:`AgentRuntimeState` entry is created
-        on demand if needed. Events for unknown agents are ignored
+        :class:`SwarmState`, a :class:`AgentRuntimeState` entry is created on
+        demand if needed. Events for unknown agents are ignored
         defensively; in a full implementation these would be logged for
         diagnostics.
         """
 
-        # Prefer metadata-backed registration when available so that runtime
+        # Prefer state-backed registration when available so that runtime
         # state remains consistent with the configured swarm description.
-        metadata = self.swarm_metadata.agents.get(event.agent_id)
-        if metadata is not None:
-            runtime_state = self.ensure_agent_runtime_state(metadata)
+        agent_state = self.swarm_state.agents.get(event.agent_id)
+        if agent_state is not None:
+            runtime_state = self.ensure_agent_runtime_state(agent_state)
         else:
             runtime_state = self.state.agents.get(event.agent_id)
             if runtime_state is None:
@@ -240,7 +241,8 @@ class AgentSupervisor:
           to ``Idle`` in one step.
 
         Restart limits and backoff policies from
-        :class:`AgentMetadata.restart_policy` are intentionally deferred.
+        :class:`AgentState.restart_policy` (or equivalent policy fields) are
+        intentionally deferred.
         """
 
         runtime_state = self.state.agents.get(agent_id)

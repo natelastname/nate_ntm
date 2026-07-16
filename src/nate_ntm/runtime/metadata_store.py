@@ -1,17 +1,17 @@
-"""Project-local swarm metadata persistence layer.
+"""Project-local swarm state persistence layer.
 
-This module implements a small, file-based metadata store used by the
-runtime daemon to persist swarm and per-agent metadata under the
-project's metadata directory (for example, ``.nate_ntm/``).
+This module implements a small, file-based store used by the runtime
+daemon to persist swarm and per-agent state under the project's
+metadata directory (for example, ``.nate_ntm/``).
 
 It is intentionally conservative:
 
-* JSON files only, with explicit dataclasses for :class:`SwarmMetadata`
-  and :class:`AgentMetadata`.
+* JSON files only, containing a single Pydantic :class:`SwarmState`
+  object graph (see :mod:`nate_ntm.runtime.swarm_state`).
 * Atomic write semantics for all persistence operations (write to a
   temporary file in the same directory, flush/fsync, then rename into
-  place) to avoid partially written metadata files (T038 / FR-014).
-* Basic validation to ensure that loaded metadata is consistent with the
+  place) to avoid partially written state files (T038 / FR-014).
+* Basic validation to ensure that loaded state is consistent with the
   current :class:`~nate_ntm.config.runtime_config.RuntimeConfig`.
 
 Layout (see ``ConfigOverhaul.md`` and ``data-model.md`` §2.3):
@@ -20,10 +20,6 @@ Layout (see ``ConfigOverhaul.md`` and ``data-model.md`` §2.3):
 
     .nate_ntm/
     └── swarm.json   # Single SwarmState object graph (authoritative)
-
-Legacy :class:`SwarmMetadata` and :class:`AgentMetadata` dataclasses
-are now treated as in-memory views derived from this persisted
-:class:`~nate_ntm.runtime.swarm_state.SwarmState`.
 
 This module does **not** perform higher-level lifecycle logic such as
 "create vs resume" decisions; that is the responsibility of the
@@ -51,8 +47,24 @@ __all__ = [
 ]
 
 # ---------------------------------------------------------------------------
-# Data models
+# Canonical state models
 # ---------------------------------------------------------------------------
+#
+# Durable state is represented exclusively by the Pydantic models
+# :class:`SwarmState` and :class:`AgentState` from
+# :mod:`nate_ntm.runtime.swarm_state`. This module provides a thin,
+# file-based adapter around those models.
+#
+# Legacy :class:`SwarmMetadata` and :class:`AgentMetadata` dataclasses are
+# retained as in-memory views for compatibility with existing call sites.
+# They are *not* persisted directly; instead they are materialized from and
+# written back into the canonical :class:`SwarmState` representation.
+
+
+# ---------------------------------------------------------------------------
+# Legacy metadata views (compatibility layer)
+# ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True, slots=True)
 class AgentMetadata:
@@ -204,7 +216,12 @@ class SwarmMetadata:
             runtime_options=dict(data.get("runtime_options", {}) or {}),
         )
 
-    def validate(self, *, expected_project_path: Path | None = None, expected_swarm_id: str | None = None) -> None:
+    def validate(
+        self,
+        *,
+        expected_project_path: Path | None = None,
+        expected_swarm_id: str | None = None,
+    ) -> None:
         """Validate basic invariants.
 
         * ``project_path`` MUST match ``expected_project_path`` (if given).
@@ -214,7 +231,8 @@ class SwarmMetadata:
 
         if expected_swarm_id is not None and self.swarm_id != expected_swarm_id:
             raise ValueError(
-                f"SwarmMetadata.swarm_id {self.swarm_id!r} does not match expected {expected_swarm_id!r}"
+                "SwarmMetadata.swarm_id "
+                f"{self.swarm_id!r} does not match expected {expected_swarm_id!r}"
             )
 
         if expected_project_path is not None:
@@ -226,9 +244,8 @@ class SwarmMetadata:
                 )
 
 
-
 # ---------------------------------------------------------------------------
-# Conversion helpers: dataclasses \/ Pydantic models
+# Conversion helpers: dataclasses <-> Pydantic models
 # ---------------------------------------------------------------------------
 
 
@@ -308,7 +325,6 @@ def _swarm_metadata_from_state(state: PersistedSwarmState) -> SwarmMetadata:
     )
 
 
-
 # ---------------------------------------------------------------------------
 # Low-level helpers
 # ---------------------------------------------------------------------------
@@ -386,30 +402,32 @@ class MetadataStore:
     def project_path(self) -> Path:
         return self.config.project_path
 
-    # -- SwarmState / SwarmMetadata -------------------------------------
+    # -- SwarmState -----------------------------------------------------
 
     def load_swarm_state(self) -> PersistedSwarmState:
         """Load the persisted :class:`SwarmState` from ``swarm.json``.
 
-        :raises FileNotFoundError: if the swarm metadata file does not
-          exist.
+        This validates both the Pydantic schema and higher-level
+        invariants such as ``project_path`` and ``swarm_id`` matching the
+        current :class:`RuntimeConfig`.
+
+        :raises FileNotFoundError: if the swarm state file does not exist.
         :raises ValueError: if the file is malformed or violates
-          invariants at the Pydantic level.
+          invariants.
         """
 
         path = _swarm_path(self.config)
         with path.open("r", encoding="utf-8") as f:
             raw_text = f.read()
 
-        return PersistedSwarmState.from_json(raw_text)
+        state = PersistedSwarmState.from_json(raw_text)
+        state.validate(
+            expected_project_path=self.config.project_path,
+            expected_swarm_id=self.config.swarm_id,
+        )
+        return state
 
-    def save_swarm_state(self, state: PersistedSwarmState) -> None:
-        """Persist :class:`SwarmState` to ``swarm.json`` atomically."""
 
-        # Use Pydantic's JSON-oriented dump mode so that datetimes, paths,
-        # and nested models (including NateOhaConfig) are converted to plain
-        # JSON-serializable values before writing.
-        _atomic_write_json(_swarm_path(self.config), state.model_dump(mode="json"))
 
     def load_swarm_metadata(self) -> SwarmMetadata:
         """Load and validate :class:`SwarmMetadata` from the persisted state.
@@ -444,7 +462,108 @@ class MetadataStore:
         state = _swarm_state_from_metadata(swarm)
         self.save_swarm_state(state)
 
-    # -- AgentMetadata -----------------------------------------------------
+
+    # -- AgentState helpers -----------------------------------------------
+
+    def load_agent_state(self, agent_id: str) -> PersistedAgentState:
+        """Load state for a single agent from the persisted swarm state.
+
+        :raises FileNotFoundError: if the swarm or the requested agent does
+          not exist.
+        :raises ValueError: if the file is malformed or violates
+          invariants.
+        """
+
+        state = self.load_swarm_state()
+        try:
+            agent_state = state.agents[agent_id]
+        except KeyError as exc:
+            # Mirror previous behaviour where a missing per-agent file
+            # surfaced as ``FileNotFoundError``.
+            raise FileNotFoundError(
+                f"Agent state not found for {agent_id!r}"
+            ) from exc
+
+        # Basic consistency check: the embedded id should match the key.
+        if agent_state.agent_id != agent_id:
+            raise ValueError(
+                f"Agent state for id {agent_id!r} contains agent_id "
+                f"{agent_state.agent_id!r}"
+            )
+
+        return agent_state
+
+    def save_agent_state(self, agent_state: PersistedAgentState) -> None:
+        """Persist state for a single agent via :class:`SwarmState`.
+
+        The caller is expected to have created swarm-level state first; if
+        no swarm state exists, this raises :class:`FileNotFoundError`.
+        """
+
+        if not agent_state.agent_id:
+            raise ValueError("AgentState.agent_id must not be empty")
+
+        try:
+            state = self.load_swarm_state()
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(
+                "Swarm state not found; cannot save agent state before "
+                "the swarm has been created."
+            ) from exc
+
+        # Update or insert the per-agent entry and bump the last-updated
+        # timestamp to reflect the change.
+        state.agents[agent_state.agent_id] = agent_state
+        state.last_updated_at = datetime.utcnow()
+        self.save_swarm_state(state)
+
+    def load_all_agent_states(self) -> Dict[str, PersistedAgentState]:
+        """Load state for all agents from the persisted swarm state.
+
+        When no swarm state exists, this returns an empty mapping to
+        mirror the previous behaviour where a missing ``agents/``
+        directory was treated as "no agents".
+        """
+
+        try:
+            state = self.load_swarm_state()
+        except FileNotFoundError:
+            return {}
+
+        # Use a regular ``dict`` so callers can mutate independently of the
+        # underlying :class:`SwarmState` if they wish.
+        return dict(state.agents)
+
+    def save_all_agent_states(
+        self, agents: Iterable[PersistedAgentState]
+    ) -> None:
+        """Persist state for all provided agents in a single swarm update.
+
+        This performs a read-modify-write of :class:`SwarmState`, updating
+        or inserting the provided agents and bumping ``last_updated_at``
+        once after all changes.
+        """
+
+        try:
+            state = self.load_swarm_state()
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(
+                "Swarm state not found; cannot save agent state before "
+                "the swarm has been created."
+            ) from exc
+
+        updated = False
+        for agent_state in agents:
+            if not agent_state.agent_id:
+                raise ValueError("AgentState.agent_id must not be empty")
+            state.agents[agent_state.agent_id] = agent_state
+            updated = True
+
+        if updated:
+            state.last_updated_at = datetime.utcnow()
+            self.save_swarm_state(state)
+
+    # -- AgentMetadata compatibility helpers -------------------------------
 
     def load_agent_metadata(self, agent_id: str) -> AgentMetadata:
         """Load metadata for a single agent from the persisted swarm state.
@@ -455,14 +574,7 @@ class MetadataStore:
           invariants.
         """
 
-        state = self.load_swarm_state()
-        try:
-            agent_state = state.agents[agent_id]
-        except KeyError as exc:
-            # Mirror the previous behaviour where a missing per-agent file
-            # surfaced as FileNotFoundError.
-            raise FileNotFoundError(f"Agent metadata not found for {agent_id!r}") from exc
-
+        agent_state = self.load_agent_state(agent_id)
         meta = _agent_metadata_from_state(agent_state)
         if meta.agent_id != agent_id:
             raise ValueError(
@@ -473,26 +585,17 @@ class MetadataStore:
     def save_agent_metadata(self, metadata: AgentMetadata) -> None:
         """Persist metadata for a single agent via :class:`SwarmState`.
 
-        The caller is expected to have created swarm-level metadata
-        first; if no swarm state exists, this raises FileNotFoundError.
+        The caller is expected to have created swarm-level state first; if
+        no swarm state exists, this raises :class:`FileNotFoundError`.
         """
 
         if not metadata.agent_id:
             raise ValueError("AgentMetadata.agent_id must not be empty")
 
-        try:
-            state = self.load_swarm_state()
-        except FileNotFoundError as exc:
-            raise FileNotFoundError(
-                "Swarm metadata not found; cannot save agent metadata before "
-                "the swarm has been created."
-            ) from exc
-
-        # Update or insert the per-agent entry and bump the last-updated
-        # timestamp to reflect the change.
-        state.agents[metadata.agent_id] = _agent_state_from_metadata(metadata)
-        state.last_updated_at = datetime.utcnow()
-        self.save_swarm_state(state)
+        # Delegate to the AgentState-based helper so that durable state
+        # remains the single source of truth.
+        agent_state = _agent_state_from_metadata(metadata)
+        self.save_agent_state(agent_state)
 
     def load_all_agent_metadata(self) -> Dict[str, AgentMetadata]:
         """Load metadata for all agents from the persisted swarm state.
@@ -503,12 +606,12 @@ class MetadataStore:
         """
 
         try:
-            state = self.load_swarm_state()
+            states = self.load_all_agent_states()
         except FileNotFoundError:
             return {}
 
         result: Dict[str, AgentMetadata] = {}
-        for agent_id, agent_state in state.agents.items():
+        for agent_id, agent_state in states.items():
             meta = _agent_metadata_from_state(agent_state)
             result[meta.agent_id] = meta
         return result
@@ -522,3 +625,12 @@ class MetadataStore:
 
         for meta in agents:
             self.save_agent_metadata(meta)
+
+    def save_swarm_state(self, state: PersistedSwarmState) -> None:
+        """Persist :class:`SwarmState` to ``swarm.json`` atomically."""
+
+        # Use Pydantic's JSON-oriented dump mode so that datetimes, paths,
+        # and nested models (including NateOhaConfig) are converted to plain
+        # JSON-serializable values before writing.
+        _atomic_write_json(_swarm_path(self.config), state.model_dump(mode="json"))
+

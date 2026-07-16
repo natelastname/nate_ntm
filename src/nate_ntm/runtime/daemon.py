@@ -1,27 +1,28 @@
 """Runtime daemon entrypoint and startup semantics.
 
-This module defines a small `RuntimeDaemon` entrypoint class that wires
-`together:
+This module defines a small :class:`RuntimeDaemon` entrypoint class that
+wires together:
 
 * :class:`~nate_ntm.config.runtime_config.RuntimeConfig`
 * :class:`~nate_ntm.runtime.metadata_store.MetadataStore`
-* :class:`~nate_ntm.runtime.metadata_store.SwarmMetadata`
+* :class:`~nate_ntm.runtime.swarm_state.SwarmState`
 * :class:`~nate_ntm.runtime.state.RuntimeState`
 
-It also codifies explicit `create` vs `resume` startup semantics in a
-way that the CLI can build on (see tasks T008 and T037):
+It also codifies explicit ``create`` vs ``resume`` startup semantics in
+a way that the CLI can build on (see tasks T008 and T037):
 
-* In **`create`** mode, starting the runtime MUST fail if swarm
-  metadata already exists for the project unless a higher-level caller
-  explicitly opts into overwrite or reuse behavior.
-* In **`resume`** mode, starting the runtime MUST fail if required
-  swarm metadata is missing.
+* In **``create``** mode, starting the runtime MUST fail if swarm state
+  already exists for the project unless a higher-level caller explicitly
+  opts into overwrite or reuse behavior.
+* In **``resume``** mode, starting the runtime MUST fail if required
+  swarm state is missing.
 
 Higher-level tasks (for example, T013 and later user stories) are
-responsible for actually creating new `SwarmMetadata`/`AgentMetadata`
-records in `create` mode and for wiring in the scheduler, ACP, and Agent
-Mail integrations. This module focuses on safe, testable orchestration
-and lifecycle state transitions.
+responsible for actually creating or populating new
+:class:`SwarmState`/:class:`AgentState` records in ``create`` mode and
+for wiring in the scheduler, ACP, and Agent Mail integrations. This
+module focuses on safe, testable orchestration and lifecycle state
+transitions.
 """
 
 from __future__ import annotations
@@ -39,11 +40,11 @@ from .acp_client import BaseAcpClient
 from .adapters import RuntimeAdapters, create_runtime_adapters
 from .agent_mail_client import BaseAgentMailClient, FakeAgentMailClient, McpAgentMailClient
 from .agents import AgentSupervisor
-from .metadata_store import AgentMetadata, MetadataStore, SwarmMetadata
-from .nate_oha_launch import build_effective_nate_oha_config
-from .nate_oha_config_compat import NateOhaConfig
+from .metadata_store import MetadataStore
 from .scheduler import RuntimeScheduler
 from .state import AgentStatus, RuntimeState, RuntimeStatus
+from .swarm_state import AgentState, SwarmState
+from .nate_oha_launch import build_effective_nate_oha_config
 
 __all__ = [
     "StartupMode",
@@ -58,7 +59,7 @@ logger = logging.getLogger(__name__)
 
 
 def _map_acp_state_to_last_known_status(acp_state: str) -> str | None:
-    """Map adapter-level ACP state to ``AgentMetadata.last_known_status``.
+    """Map adapter-level ACP state to ``AgentState.last_known_status``.
 
     This keeps the persisted string representation aligned with
     :class:`AgentStatus` while remaining tolerant of adapter-specific
@@ -111,8 +112,8 @@ class MetadataMissingError(RuntimeStartupError):
     """Raised when `mode=resume` is requested but required metadata is missing."""
 
 
-def _swarm_metadata_path(config: RuntimeConfig) -> Path:
-    """Return the expected path to `swarm.json` for `config`.
+def _swarm_state_path(config: RuntimeConfig) -> Path:
+    """Return the expected path to ``swarm.json`` for ``config``.
 
     This mirrors the layout used by :class:`MetadataStore` without
     importing its private helpers.
@@ -122,25 +123,25 @@ def _swarm_metadata_path(config: RuntimeConfig) -> Path:
 
 
 def check_startup_preconditions(config: RuntimeConfig, mode: StartupMode) -> None:
-    """Validate `create` vs `resume` semantics for the given `config`.
+    """Validate ``create`` vs ``resume`` semantics for the given ``config``.
 
     * For :data:`StartupMode.CREATE`, this raises
-      :class:`MetadataAlreadyExistsError` if swarm metadata already
-      exists under the project's metadata directory.
+      :class:`MetadataAlreadyExistsError` if swarm state already exists
+      under the project's metadata directory.
     * For :data:`StartupMode.RESUME`, this raises
-      :class:`MetadataMissingError` if swarm metadata does not exist.
+      :class:`MetadataMissingError` if swarm state does not exist.
 
     This function is deliberately small and side-effect free so it can
     be exercised directly in unit tests and reused by the CLI layer.
     """
 
-    swarm_path = _swarm_metadata_path(config)
+    swarm_path = _swarm_state_path(config)
 
     logger.debug(
         "check_startup_preconditions",
         extra={
             "mode": mode.value,
-            "swarm_metadata_path": str(swarm_path),
+            "swarm_state_path": str(swarm_path),
         },
     )
 
@@ -150,11 +151,11 @@ def check_startup_preconditions(config: RuntimeConfig, mode: StartupMode) -> Non
                 "startup_precondition_metadata_already_exists",
                 extra={
                     "mode": mode.value,
-                    "swarm_metadata_path": str(swarm_path),
+                    "swarm_state_path": str(swarm_path),
                 },
             )
             raise MetadataAlreadyExistsError(
-                f"Swarm metadata already exists at {swarm_path}; refusing to "
+                f"Swarm state already exists at {swarm_path}; refusing to "
                 "start in create mode without an explicit override."
             )
     elif mode is StartupMode.RESUME:
@@ -163,11 +164,11 @@ def check_startup_preconditions(config: RuntimeConfig, mode: StartupMode) -> Non
                 "startup_precondition_metadata_missing",
                 extra={
                     "mode": mode.value,
-                    "swarm_metadata_path": str(swarm_path),
+                    "swarm_state_path": str(swarm_path),
                 },
             )
             raise MetadataMissingError(
-                f"Swarm metadata not found at {swarm_path}; cannot resume a "
+                f"Swarm state not found at {swarm_path}; cannot resume a "
                 "swarm that has not been created."
             )
     else:  # pragma: no cover - defensive against future Enum variants
@@ -175,7 +176,7 @@ def check_startup_preconditions(config: RuntimeConfig, mode: StartupMode) -> Non
             "startup_precondition_unsupported_mode",
             extra={
                 "mode": str(mode),
-                "swarm_metadata_path": str(swarm_path),
+                "swarm_state_path": str(swarm_path),
             },
         )
         raise RuntimeStartupError(f"Unsupported startup mode: {mode!r}")
@@ -186,8 +187,8 @@ class RuntimeDaemon:
     """Core runtime daemon entrypoint.
 
     At this stage (Phase 2), the daemon focuses on owning the resolved
-    configuration, loaded swarm metadata, and top-level runtime state,
-    plus explicit lifecycle transitions (`start` and `shutdown`).
+    configuration, loaded swarm state, and top-level runtime state, plus
+    explicit lifecycle transitions (``start`` and ``shutdown``).
 
     Scheduler wiring, ACP connections, Agent Mail polling, and control
     API integration are introduced in later tasks.
@@ -195,7 +196,7 @@ class RuntimeDaemon:
 
     config: RuntimeConfig
     metadata_store: MetadataStore
-    swarm_metadata: SwarmMetadata
+    swarm_state: SwarmState
     state: RuntimeState
 
     startup_mode: StartupMode
@@ -226,22 +227,21 @@ class RuntimeDaemon:
         agent_count: int | None = None,
         adapters: RuntimeAdapters | None = None,
     ) -> "RuntimeDaemon":
-        """Construct a :class:`RuntimeDaemon` in `create` mode.
+        """Construct a :class:`RuntimeDaemon` in ``create`` mode.
 
-        This helper validates that swarm metadata does *not* already
-        exist for the project, initializes a fresh :class:`SwarmMetadata`
-        record (optionally with a small set of initial agents), persists
-        it via :class:`MetadataStore`, and returns a new
-        :class:`RuntimeDaemon` with :class:`RuntimeState` in the
-        ``Starting`` status.
+        This helper validates that swarm state does *not* already exist
+        for the project, initializes a fresh :class:`SwarmState` record
+        (optionally with a small set of initial agents), persists it via
+        :class:`MetadataStore`, and returns a new :class:`RuntimeDaemon`
+        with :class:`RuntimeState` in the ``Starting`` status.
 
         When ``agent_count`` is provided and greater than zero, a simple
         set of agents is created using the runtime-owned Agent Mail and
         ACP adapters supplied via ``adapters`` (for the MVP, the
         in-memory fake implementations). Their Agent Mail identities and
-        ACP conversation IDs are persisted in both
-        :class:`SwarmMetadata` and per-agent metadata files so that
-        later resume flows can reuse them.
+        ACP conversation IDs are persisted in the resulting
+        :class:`SwarmState`/:class:`AgentState` records so that later
+        resume flows can reuse them.
         """
 
         check_startup_preconditions(config, StartupMode.CREATE)
@@ -272,10 +272,8 @@ class RuntimeDaemon:
         # conversations/sessions are established lazily when an ACP
         # lifecycle operation (for example, ``start_agent_async``) is
         # invoked for the agent.
-        agents: dict[str, "AgentMetadata"] = {}
+        agents: dict[str, AgentState] = {}
         if agent_count is not None and agent_count > 0:
-            from .metadata_store import AgentMetadata  # local import to avoid cycles
-
             for index in range(1, agent_count + 1):
                 agent_id = f"agent-{index}"
                 display_name = f"Agent {index}"
@@ -283,7 +281,7 @@ class RuntimeDaemon:
                 agent_mail_identity, agent_mail_credentials_ref = (
                     agent_mail_client.ensure_agent_identity_with_credentials(agent_id)
                 )
-                agents[agent_id] = AgentMetadata(
+                agents[agent_id] = AgentState(
                     agent_id=agent_id,
                     display_name=display_name,
                     agent_mail_identity=agent_mail_identity,
@@ -296,11 +294,7 @@ class RuntimeDaemon:
         # persisted via SwarmState/AgentState and reused across daemon
         # restarts instead of being re-derived on every launch.
         if agents and config.nate_oha_config_path is not None and config.nate_oha_runtime_mode:
-            from .nate_oha_launch import (  # local import to avoid cycles
-                build_effective_nate_oha_config,
-            )
-
-            new_agents: dict[str, "AgentMetadata"] = {}
+            new_agents: dict[str, AgentState] = {}
             for agent_id, meta in agents.items():
                 try:
                     nate_oha_config = build_effective_nate_oha_config(
@@ -312,13 +306,13 @@ class RuntimeDaemon:
                         f"Failed to build Nate OHA configuration for agent {agent_id!r}: {exc}"
                     ) from exc
 
-                new_agents[agent_id] = replace(meta, nate_oha_config=nate_oha_config)
+                new_agents[agent_id] = meta.model_copy(update={"nate_oha_config": nate_oha_config})
 
             agents = new_agents
 
 
         now = datetime.utcnow()
-        swarm = SwarmMetadata(
+        swarm = SwarmState(
             swarm_id=config.swarm_id,
             project_path=config.project_path,
             agent_mail_project_id=agent_mail_project_id,
@@ -327,16 +321,9 @@ class RuntimeDaemon:
             agents=agents,
         )
 
-        # Persist the newly created swarm metadata using atomic write
+        # Persist the newly created swarm state using atomic write
         # semantics provided by the MetadataStore.
-        store.save_swarm_metadata(swarm)
-
-        # Persist per-agent metadata files when initial agents were
-        # created. This mirrors the layout used by resume-mode tests and
-        # ensures that Agent Mail identities and ACP conversation IDs are
-        # durable across restarts.
-        if agents:
-            store.save_all_agent_metadata(agents.values())
+        store.save_swarm_state(swarm)
 
         state = RuntimeState(config=config)
 
@@ -346,12 +333,12 @@ class RuntimeDaemon:
         agent_supervisor = AgentSupervisor(
             config=config,
             state=state,
-            swarm_metadata=swarm,
+            swarm_state=swarm,
         )
         scheduler = RuntimeScheduler(
             config=config,
             state=state,
-            swarm_metadata=swarm,
+            swarm_state=swarm,
             agent_supervisor=agent_supervisor,
             agent_mail_client=agent_mail_client,
         )
@@ -365,7 +352,7 @@ class RuntimeDaemon:
         return cls(
             config=config,
             metadata_store=store,
-            swarm_metadata=swarm,
+            swarm_state=swarm,
             state=state,
             startup_mode=StartupMode.CREATE,
             scheduler=scheduler,
@@ -380,17 +367,17 @@ class RuntimeDaemon:
         *,
         adapters: RuntimeAdapters | None = None,
     ) -> "RuntimeDaemon":
-        """Construct a :class:`RuntimeDaemon` in `resume` mode.
+        """Construct a :class:`RuntimeDaemon` in ``resume`` mode.
 
-        This helper validates that swarm metadata exists and is
-        consistent with the provided configuration, then initializes a
-        fresh :class:`RuntimeState` in the `Starting` status.
+        This helper validates that swarm state exists and is consistent
+        with the provided configuration, then initializes a fresh
+        :class:`RuntimeState` in the ``Starting`` status.
 
         The same adapter instances (or compatible equivalents) that were
         used during :meth:`create` should be supplied via ``adapters`` so
         that identifiers derived from the integration layer (for example,
         Agent Mail project IDs and ACP conversation IDs) can be
-        revalidated against the persisted metadata.
+        revalidated against the persisted state.
         """
 
         check_startup_preconditions(config, StartupMode.RESUME)
@@ -404,7 +391,7 @@ class RuntimeDaemon:
         )
 
         store = MetadataStore(config=config)
-        swarm = store.load_swarm_metadata()
+        swarm = store.load_swarm_state()
 
         state = RuntimeState(config=config)
 
@@ -412,7 +399,7 @@ class RuntimeDaemon:
         # that the daemon owns a consistent set of integration adapters
         # regardless of startup mode. For US2 we also enforce FR-009 by
         # rebinding these adapters against the persisted swarm/agent
-        # metadata and validating that identifiers are reused on resume.
+        # state and validating that identifiers are reused on resume.
         if adapters is None:
             adapters = create_runtime_adapters(config)
 
@@ -422,12 +409,12 @@ class RuntimeDaemon:
         agent_supervisor = AgentSupervisor(
             config=config,
             state=state,
-            swarm_metadata=swarm,
+            swarm_state=swarm,
         )
         scheduler = RuntimeScheduler(
             config=config,
             state=state,
-            swarm_metadata=swarm,
+            swarm_state=swarm,
             agent_supervisor=agent_supervisor,
             agent_mail_client=agent_mail_client,
         )
@@ -476,7 +463,7 @@ class RuntimeDaemon:
         # :attr:`RuntimeConfig.agent_mail_project` (or its default) is treated
         # as the canonical project key; :class:`McpAgentMailClient.ensure_project`
         # must therefore resolve to the same identifier that was recorded in
-        # :class:`SwarmMetadata.agent_mail_project_id` at create time. Any
+        # :class:`SwarmState.agent_mail_project_id` at create time. Any
         # divergence indicates that the runtime is now pointed at a different
         # Agent Mail project for this swarm and is treated as a hard startup
         # error to protect FR-009.
@@ -525,7 +512,7 @@ class RuntimeDaemon:
         return cls(
             config=config,
             metadata_store=store,
-            swarm_metadata=swarm,
+            swarm_state=swarm,
             state=state,
             startup_mode=StartupMode.RESUME,
             scheduler=scheduler,
@@ -550,7 +537,7 @@ class RuntimeDaemon:
                 logger.debug(
                     "runtime_start_idempotent",
                     extra={
-                        "swarm_id": self.swarm_metadata.swarm_id,
+                        "swarm_id": self.config.swarm_id,
                         "project_path": str(self.config.project_path),
                     },
                 )
@@ -559,7 +546,7 @@ class RuntimeDaemon:
             logger.error(
                 "runtime_start_invalid_state",
                 extra={
-                    "swarm_id": self.swarm_metadata.swarm_id,
+                    "swarm_id": self.config.swarm_id,
                     "project_path": str(self.config.project_path),
                     "status": self.state.status.value,
                 },
@@ -579,7 +566,7 @@ class RuntimeDaemon:
         logger.info(
             "runtime_started",
             extra={
-                "swarm_id": self.swarm_metadata.swarm_id,
+                "swarm_id": self.config.swarm_id,
                 "project_path": str(self.config.project_path),
             },
         )
@@ -597,7 +584,7 @@ class RuntimeDaemon:
             logger.debug(
                 "runtime_shutdown_ignored",
                 extra={
-                    "swarm_id": self.swarm_metadata.swarm_id,
+                    "swarm_id": self.config.swarm_id,
                     "project_path": str(self.config.project_path),
                     "status": self.state.status.value,
                 },
@@ -612,7 +599,7 @@ class RuntimeDaemon:
         logger.info(
             "runtime_shutdown_requested",
             extra={
-                "swarm_id": self.swarm_metadata.swarm_id,
+                "swarm_id": self.config.swarm_id,
                 "project_path": str(self.config.project_path),
                 "status": self.state.status.value,
             },
@@ -629,7 +616,7 @@ class RuntimeDaemon:
         logger.info(
             "runtime_stopped",
             extra={
-                "swarm_id": self.swarm_metadata.swarm_id,
+                "swarm_id": self.config.swarm_id,
                 "project_path": str(self.config.project_path),
             },
         )
@@ -668,7 +655,7 @@ class RuntimeDaemon:
         return {
             "status": self.state.status.value,
             "project_path": str(self.config.project_path),
-            "swarm_id": self.swarm_metadata.swarm_id,
+            "swarm_id": self.config.swarm_id,
             "agent_counts": self._compute_agent_counts(),
         }
 
@@ -683,9 +670,10 @@ class RuntimeDaemon:
 
         agent_counts = self._compute_agent_counts()
 
-        # Union of configured agents (metadata) and those currently present
-        # in runtime state; this is tolerant of partial initialization.
-        all_agent_ids = set(self.swarm_metadata.agents.keys()) | set(
+        # Union of configured agents (from durable state) and those currently
+        # present in runtime state; this is tolerant of partial
+        # initialization.
+        all_agent_ids = set(self.swarm_state.agents.keys()) | set(
             self.state.agents.keys()
         )
 
@@ -701,7 +689,7 @@ class RuntimeDaemon:
 
         agents = []
         for agent_id in sorted_ids:
-            metadata = self.swarm_metadata.agents.get(agent_id)
+            metadata = self.swarm_state.agents.get(agent_id)
             runtime_state = self.state.agents.get(agent_id)
 
             display_name = metadata.display_name if metadata is not None else agent_id
@@ -724,8 +712,8 @@ class RuntimeDaemon:
             )
 
         return {
-            "swarm_id": self.swarm_metadata.swarm_id,
-            "project_path": str(self.swarm_metadata.project_path),
+            "swarm_id": self.config.swarm_id,
+            "project_path": str(self.config.project_path),
             "runtime_status": self.state.status.value,
             "agent_counts": agent_counts,
             "agents": agents,
@@ -733,15 +721,14 @@ class RuntimeDaemon:
 
 
     def _refresh_last_known_status_from_acp(
-        self, agent_id: str, metadata: AgentMetadata | None
-    ) -> AgentMetadata | None:
-        """Update ``AgentMetadata.last_known_status`` from the ACP adapter.
+        self, agent_id: str, metadata: AgentState | None
+    ) -> AgentState | None:
+        """Update :class:`AgentState.last_known_status` from the ACP adapter.
 
         This consults the runtime-owned ACP client (when present) for a
         lightweight adapter-level status, maps that to the persisted
-        ``last_known_status`` representation, and persists both the per-agent
-        metadata file and the in-memory swarm snapshot when a change is
-        observed.
+        ``last_known_status`` representation, and persists the updated
+        :class:`SwarmState` when a change is observed.
 
         The method is intentionally tolerant of adapter errors and unknown
         states so that callers (for example, :meth:`get_agent_detail`) can
@@ -761,27 +748,23 @@ class RuntimeDaemon:
         if new_status is None:
             return metadata
 
-        current_meta = metadata
+        current_meta = metadata or self.swarm_state.agents.get(agent_id)
         if current_meta is None:
-            # When swarm metadata does not yet include an entry for this
-            # agent, fall back to the per-agent metadata file if it exists.
-            try:
-                current_meta = self.metadata_store.load_agent_metadata(agent_id)
-            except FileNotFoundError:
-                return metadata
+            # Unknown agent; nothing to refresh.
+            return None
 
         if current_meta.last_known_status == new_status:
             return current_meta
 
-        updated = replace(current_meta, last_known_status=new_status)
-        self.metadata_store.save_agent_metadata(updated)
+        updated = current_meta.model_copy(update={"last_known_status": new_status})
 
-        # Update the in-memory swarm metadata snapshot so subsequent calls in
-        # this process see the refreshed status without reading from disk.
-        swarm = self.swarm_metadata
+        # Update the in-memory swarm state snapshot so subsequent calls in
+        # this process see the refreshed status, and persist to disk.
+        swarm = self.swarm_state
         agents = dict(swarm.agents)
         agents[agent_id] = updated
-        self.swarm_metadata = replace(swarm, agents=agents)
+        self.swarm_state = swarm.model_copy(update={"agents": agents})
+        self.metadata_store.save_swarm_state(self.swarm_state)
 
         return updated
 
@@ -798,18 +781,10 @@ class RuntimeDaemon:
 
         runtime_state = self.state.agents.get(agent_id)
 
-        # Start from the in-memory swarm snapshot and, when available, prefer
-        # the persisted per-agent metadata on disk so fields like
-        # ``last_known_status`` stay in sync with updates made after the
-        # daemon was constructed.
-        metadata = self.swarm_metadata.agents.get(agent_id)
-        if metadata is not None:
-            try:
-                stored_meta = self.metadata_store.load_agent_metadata(agent_id)
-            except FileNotFoundError:
-                pass
-            else:
-                metadata = stored_meta
+        # Start from the in-memory swarm snapshot derived from the persisted
+        # :class:`SwarmState` so fields like ``last_known_status`` stay in
+        # sync with updates made after the daemon was constructed.
+        metadata = self.swarm_state.agents.get(agent_id)
 
         # When no live runtime state exists (for example, before the scheduler
         # has started or immediately after a crash), attempt to refresh the

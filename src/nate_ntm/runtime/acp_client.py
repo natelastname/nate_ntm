@@ -13,7 +13,7 @@ Concrete implementation in this branch:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
 import asyncio
 import logging
@@ -33,7 +33,8 @@ from ..config.runtime_config import RuntimeConfig
 from .acp_connection import open_nate_oha_acp_client
 from .acp_protocol_client import NATE_NTM_CLIENT_CAPABILITIES
 from .events import AgentEvent, AgentEventSource
-from .metadata_store import AgentMetadata, MetadataStore
+from .metadata_store import MetadataStore
+from .swarm_state import AgentState
 
 from .nate_oha_launch import build_nate_oha_launch_spec, materialize_nate_oha_config
 
@@ -256,7 +257,7 @@ class BaseAcpClient:
     # The following methods define the public contract. Concrete
     # implementations *must* override them.
 
-    def start_agent(self, agent_id: str, *, metadata: AgentMetadata) -> None:  # pragma: no cover - abstract
+    def start_agent(self, agent_id: str, *, metadata: AgentState) -> None:  # pragma: no cover - abstract
         """Launch or attach to the ACP runtime backing ``agent_id``.
 
         Implementations are free to decide how much work is performed
@@ -276,7 +277,7 @@ class BaseAcpClient:
     # Agent-lifecycle async API (T016)
     # ------------------------------------------------------------------
 
-    async def start_agent_async(self, agent_id: str, *, metadata: AgentMetadata) -> None:  # pragma: no cover - abstract
+    async def start_agent_async(self, agent_id: str, *, metadata: AgentState) -> None:  # pragma: no cover - abstract
         """Asynchronously launch or attach to the ACP runtime for ``agent_id``.
 
         Implementations SHOULD override this method to provide an
@@ -613,7 +614,7 @@ class NateOhaAcpClient(BaseAcpClient):
     # BaseAcpClient API
     # ------------------------------------------------------------------
 
-    def start_agent(self, agent_id: str, *, metadata: AgentMetadata) -> None:
+    def start_agent(self, agent_id: str, *, metadata: AgentState) -> None:
         """Launch the nate_OHA ACP process backing ``agent_id``.
 
         This implementation follows the nate_OHA process-launch contract at a
@@ -719,7 +720,7 @@ class NateOhaAcpClient(BaseAcpClient):
     # Agent-lifecycle async API (ACP SDK-backed)
     # ------------------------------------------------------------------
 
-    async def start_agent_async(self, agent_id: str, *, metadata: AgentMetadata) -> None:
+    async def start_agent_async(self, agent_id: str, *, metadata: AgentState) -> None:
         """Asynchronously launch or attach to the nate_OHA ACP runtime.
 
         This implementation wires the nate_OHA subprocess into the official
@@ -795,7 +796,7 @@ class NateOhaAcpClient(BaseAcpClient):
         # ``metadata.conversation_id`` is present we treat it as a previously
         # persisted ACP session identifier and attach via ``load_session``;
         # otherwise we create a fresh session and persist the returned
-        # ``session_id`` back into :class:`AgentMetadata` so it can be reused
+        # ``session_id`` back into :class:`AgentState` so it can be reused
         # on ``--resume`` and in subsequent launches.
         conversation_id = (metadata.conversation_id or "").strip()
         if conversation_id:
@@ -815,19 +816,18 @@ class NateOhaAcpClient(BaseAcpClient):
             conversation_id = new_session.session_id
 
             # Persist the ACP-assigned session identifier into per-agent
-            # metadata so that later runs (including ``--resume``) can reuse
+            # state so that later runs (including ``--resume``) can reuse
             # it. We deliberately perform a best-effort update here: if the
-            # metadata record does not yet exist we create a minimal
-            # AgentMetadata entry seeded from the in-memory ``metadata``
-            # instance supplied by the caller.
+            # agent record does not yet exist we seed it from the in-memory
+            # :class:`AgentState` instance supplied by the caller.
             store = MetadataStore(config=self.config)
             try:
-                existing_meta = store.load_agent_metadata(agent_id)
+                existing_state = store.load_agent_state(agent_id)
             except FileNotFoundError:
-                existing_meta = metadata
+                existing_state = metadata
 
-            updated_meta = replace(existing_meta, conversation_id=conversation_id)
-            store.save_agent_metadata(updated_meta)
+            updated_state = existing_state.model_copy(update={"conversation_id": conversation_id})
+            store.save_agent_state(updated_state)
 
 
         self._sessions[agent_id] = AcpAgentSession(
@@ -1059,14 +1059,14 @@ class NateOhaAcpClient(BaseAcpClient):
             restart_count=record.restart_count,
         )
 
-    def _build_command(self, agent_id: str, metadata: AgentMetadata) -> list[str]:
+    def _build_command(self, agent_id: str, metadata: AgentState) -> list[str]:
         """Construct the nate-oha ``acp`` command line for an agent.
 
         This helper always launches Nate OHA from the persisted effective
-        :class:`NateOhaConfig` attached to :class:`AgentMetadata`. The
+        :class:`NateOhaConfig` attached to :class:`AgentState`. The
         configuration is materialised into a temporary JSON file via
         :func:`materialize_nate_oha_config` and passed to the CLI via
-        ``--config``. When :attr:`AgentMetadata.conversation_id` is non-empty,
+        ``--config``. When :attr:`AgentState.conversation_id` is non-empty,
         the same value is forwarded via ``--resume`` so that ACP can resume the
         existing session.
 
@@ -1096,7 +1096,7 @@ class NateOhaAcpClient(BaseAcpClient):
             argv.extend(["--resume", conversation_id])
         return argv
 
-    def _build_env(self, agent_id: str, metadata: AgentMetadata) -> Dict[str, str]:
+    def _build_env(self, agent_id: str, metadata: AgentState) -> Dict[str, str]:
         """Return the environment used to launch nate_OHA.
 
         The base environment is inherited from the current process with a
@@ -1117,8 +1117,8 @@ class NateOhaAcpClient(BaseAcpClient):
           :class:`RuntimeConfig.agent_mail_project`) but the persisted
           Nate OHA configuration does not have a ``features.agent_mail``
           section, an :class:`AcpClientError` is raised. Older
-          persistence formats that relied on RuntimeConfig + AgentMetadata
-          are intentionally not supported here.
+          persistence formats that relied on RuntimeConfig plus separate
+          per-agent metadata are intentionally not supported here.
         """
 
         # Start from the current process environment but treat it purely as
@@ -1206,8 +1206,8 @@ class NateOhaAcpClient(BaseAcpClient):
         if has_legacy_agent_mail:
             # The runtime has legacy Agent Mail configuration but no
             # corresponding NateOhaConfig.features.agent_mail section. Older
-            # persistence formats that relied on RuntimeConfig + AgentMetadata
-            # are no longer supported.
+            # persistence formats that relied on RuntimeConfig plus separate
+            # per-agent metadata are no longer supported.
             raise AcpClientError(
                 "Agent Mail metadata is present but NateOhaConfig.features.agent_mail is not set; "
                 "migrate this swarm to persist an effective NateOhaConfig for each agent before launching nate_OHA."
