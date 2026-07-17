@@ -61,4 +61,6 @@ reference/
 .beads/
 # nate_ntm runtime metadata directory
 .nate_ntm/
-
+# don't know how 
+*.sqlite3-shm
+*.sqlite3-wal
