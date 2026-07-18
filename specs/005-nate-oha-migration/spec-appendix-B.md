@@ -70,7 +70,7 @@ This separation minimizes maintenance burden while ensuring runtime behavior rem
 
 # Launch Sequence
 
-`NateOhaAcpClient` should launch Nate OHA using the official ACP SDK helpers rather than constructing protocol transports manually.
+`NateOhaAcpClient` should launch nate-oha using the official ACP SDK helpers rather than constructing protocol transports manually.
 
 Conceptually:
 
@@ -133,7 +133,7 @@ persist into AgentMetadata
 reuse via --resume
 ```
 
-`nate_ntm` persists the identifier and later supplies it back to Nate OHA during resume.
+`nate_ntm` persists the identifier and later supplies it back to nate-oha during resume.
 
 The identifier remains opaque throughout its lifetime.
 
@@ -170,15 +170,15 @@ The identifier remains opaque throughout its lifetime.
 
 3. Initialize ACP.
 4. Negotiate capabilities.
-5. Perform the Nate OHA-defined resume flow.
+5. Perform the nate-oha-defined resume flow.
 6. Verify the returned conversation_id matches the persisted value.
 7. Fail clearly if the identifiers disagree.
 
 ```
 
-The exact sequence of ACP requests required after launching with `--resume` is defined by Nate OHA.
+The exact sequence of ACP requests required after launching with `--resume` is defined by nate-oha.
 
-The runtime should follow the behavior expected by Nate OHA rather than assuming a particular ACP request sequence.
+The runtime should follow the behavior expected by nate-oha rather than assuming a particular ACP request sequence.
 
 This interaction should be locked down with dedicated integration tests.
 
@@ -216,7 +216,7 @@ class AcpAgentSession:
     protocol_client: NateNtmAcpProtocolClient
 ```
 
-This object represents the runtime's view of a live Nate OHA agent.
+This object represents the runtime's view of a live nate-oha agent.
 
 # ACP Event Translation
 
@@ -283,7 +283,7 @@ Testing should validate runtime orchestration rather than re-testing the ACP SDK
 
 Echo mode should exercise the complete production pipeline:
 
-- launch Nate OHA;
+- launch nate-oha;
 - initialize ACP;
 - negotiate capabilities;
 - create or resume a session;

@@ -8,9 +8,10 @@ as a single object graph, as described in ``ConfigOverhaul.md``.
 They are intentionally focused on *durable* (on-disk) state rather than
 in-memory runtime lifecycle data. In particular:
 
-* :class:`AgentState` stores the persisted per-agent metadata, including
-  the (future) fully-resolved Nate OHA configuration and ACP
+  * :class:`AgentState` stores the persisted per-agent metadata, including
+  the (future) fully-resolved nate-oha configuration and ACP
   conversation identifier.
+
 * :class:`SwarmState` aggregates all agents for a given swarm and
   carries a simple schema version for forward compatibility.
 
@@ -26,7 +27,7 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 
-from .nate_oha_config_compat import NateOhaConfig
+from nate_oha.config import NateOHAConfig
 
 __all__ = [
     "AgentState",
@@ -39,7 +40,7 @@ class AgentState(BaseModel):
 
     The durable representation intentionally keeps only the minimal set of
     per-agent fields that are not already captured inside
-    :class:`NateOhaConfig`.
+    :class:`NateOHAConfig`.
 
     Launch-time behaviour is driven entirely by :attr:`nate_oha_config`.
     This model records only the agent's durable identity plus a small
@@ -59,7 +60,7 @@ class AgentState(BaseModel):
     * ``conversation_id`` – opaque ACP-owned session identifier used
       when resuming nate-oha processes via ``--resume``.
 
-    All Nate OHA configuration, including Agent Mail settings, lives
+    All nate-oha configuration, including Agent Mail settings, lives
     inside :attr:`nate_oha_config`. Legacy per-agent Agent Mail fields
     such as ``agent_mail_identity`` and ``agent_mail_credentials_ref``
     have been removed; persisted state that still uses them is treated as
@@ -77,7 +78,7 @@ class AgentState(BaseModel):
     # within the swarm (for example, "navigator" or "implementer"). This
     # is presentation metadata that UIs can surface across restarts; it
     # does not influence nate-oha configuration and therefore does not
-    # belong in :class:`NateOhaConfig`.
+    # belong in :class:`NateOHAConfig`.
     role: Optional[str] = None
 
     # ACP-owned conversation identifier used for ``--resume``. ``None``
@@ -97,11 +98,11 @@ class AgentState(BaseModel):
     # absence of live runtime state.
     last_known_status: str = "Idle"
 
-    # Fully resolved Nate OHA configuration for this agent. Milestone 2
+    # Fully resolved nate-oha configuration for this agent. Milestone 2
     # requires this to be present for all persisted agents; callers are
     # expected to derive and attach an effective configuration before
     # saving swarm state.
-    nate_oha_config: NateOhaConfig
+    nate_oha_config: NateOHAConfig
 
     @field_validator("agent_id", "display_name")
     @classmethod

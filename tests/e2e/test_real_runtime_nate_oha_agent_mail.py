@@ -1,4 +1,4 @@
-"""Gated E2E tests for REAL runtime + nate_OHA + Agent Mail.
+"""Gated E2E tests for REAL runtime + nate-oha + Agent Mail.
 
 These tests are intended to exercise as much of the *real* runtime
 stack as is currently implemented when running with:
@@ -6,7 +6,7 @@ stack as is currently implemented when running with:
 * A live ``mcp_agent_mail`` server reachable at
   ``http://127.0.0.1:8765/api`` (or equivalent, configured via
   ``NATE_NTM_AGENT_MAIL_URL`` / ``AGENT_MAIL_URL``).
-* A working ``nate_OHA`` installation on ``PATH``.
+* A working ``nate-oha`` installation on ``PATH``.
 * REAL adapters for both Agent Mail (``McpAgentMailClient``) and ACP
   (``NateOhaAcpClient``).
 
@@ -17,7 +17,7 @@ covers:
 1. Creating a one-agent swarm with REAL adapters.
 2. Verifying that Agent Mail project/identity/credentials and ACP
    conversation identifiers are allocated and persisted.
-3. Starting a real ``nate_OHA`` subprocess via the runtime-owned
+3. Starting a real ``nate-oha`` subprocess via the runtime-owned
    ``NateOhaAcpClient`` and observing process-lifecycle events through
    the runtime's event pipeline.
 4. Shutting the agent down cleanly and confirming that no subprocess
@@ -25,7 +25,7 @@ covers:
 5. Resuming the same swarm with fresh adapters and verifying that the
    Agent Mail identity, credentials, and ACP conversation identifier are
    reused.
-6. Starting and stopping ``nate_OHA`` again under the resumed daemon.
+6. Starting and stopping ``nate-oha`` again under the resumed daemon.
 
 These tests deliberately *do not* assert on model outputs or detailed
 Agent Mail message contents. They focus on lifecycle and integration
@@ -51,7 +51,7 @@ behavior, this module should be extended with a follow-up E2E test that:
 
 For now, the focus is on validating the REAL adapter wiring,
 create→start→shutdown→resume flows, and basic event propagation from the
-nate_OHA ACP adapter into the runtime's event streams.
+nate-oha ACP adapter into the runtime's event streams.
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ def _make_real_runtime_config(project_path: Path) -> RuntimeConfig:
 
 
 def test_real_runtime_nate_oha_agent_mail_create_start_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """End-to-end launch + resume test for REAL runtime with nate_OHA.
+    """End-to-end launch + resume test for REAL runtime with nate-oha.
 
     High-level scenario:
 
@@ -102,18 +102,18 @@ def test_real_runtime_nate_oha_agent_mail_create_start_resume(tmp_path: Path, mo
     2. Call :meth:`RuntimeDaemon.create` with ``agent_count=1`` so that
        the runtime allocates an Agent Mail project, per-agent identity,
        credentials, and an ACP conversation ID via the REAL adapters.
-    3. Start the runtime (scheduler) and then launch a real ``nate_OHA``
+    3. Start the runtime (scheduler) and then launch a real ``nate-oha``
        subprocess for the agent via ``daemon.acp_client.start_agent``.
     4. Use the runtime API to fetch agent detail and verify that
        process-lifecycle events from :class:`NateOhaAcpClient` have been
        recorded.
-    5. Stop the nate_OHA process and request a graceful runtime
+    5. Stop the nate-oha process and request a graceful runtime
        shutdown, ensuring that no subprocess handles are left behind.
     6. Construct fresh adapters and call :meth:`RuntimeDaemon.resume`
        against the same project metadata, verifying that the Agent Mail
        project, per-agent identity/credentials, and ACP conversation ID
        are reused.
-    7. Start the resumed runtime, launch nate_OHA for the agent again,
+    7. Start the resumed runtime, launch nate-oha for the agent again,
        and confirm that agent metadata (identity + conversation) is
        unchanged.
     8. Stop the agent and cleanly shut the resumed runtime down.
@@ -123,21 +123,24 @@ def test_real_runtime_nate_oha_agent_mail_create_start_resume(tmp_path: Path, mo
     continuity across create→start→shutdown→resume cycles.
     """
 
-    # Align runtime and nate_OHA Agent Mail configuration so that both
+    # Align runtime and nate-oha Agent Mail configuration so that both
     # use the same project key and upstream URL. We use the absolute
     # project path as the Agent Mail project key to keep the mapping
     # simple and deterministic.
     project_key = str(tmp_path)
     base_url = "http://127.0.0.1:8765/api"
 
-    # Point Nate OHA at the sample profile used throughout this
+    # Point nate-oha at the sample profile used throughout this
     # repository for real-path tests. Using an existing config mirrors
     # the quickstart flow and ensures that ``--set runtime.mode=...``
     # overrides operate on a valid base tree.
-    repo_root = Path(__file__).resolve().parents[3]
+    # Resolve the repository root where ``nate-oha-profiles`` lives. For
+    # this project layout the tests directory is ``nate-ntm/tests/e2e``, so
+    # ``parents[2]`` yields the ``nate-ntm`` checkout root.
+    repo_root = Path(__file__).resolve().parents[2]
     base_config = repo_root / "nate-oha-profiles" / "profile1.json"
 
-    # RuntimeConfig will pick these up via its Agent Mail and Nate OHA
+    # RuntimeConfig will pick these up via its Agent Mail and nate-oha
     # resolution helpers, and NateOhaAcpClient will in turn propagate
     # them into AGENT_MAIL_* and the nate-oha launch argv for the child
     # process.
@@ -147,7 +150,7 @@ def test_real_runtime_nate_oha_agent_mail_create_start_resume(tmp_path: Path, mo
     monkeypatch.setenv("NATE_NTM_NATE_OHA_RUNTIME_MODE", "echo")
 
     # ------------------------------------------------------------------
-    # Phase 1: create a swarm, start the runtime, and launch nate_OHA.
+    # Phase 1: create a swarm, start the runtime, and launch nate-oha.
     # ------------------------------------------------------------------
 
     config = _make_real_runtime_config(tmp_path)
@@ -173,18 +176,34 @@ def test_real_runtime_nate_oha_agent_mail_create_start_resume(tmp_path: Path, mo
     assert set(swarm.agents.keys()) == {"agent-1"}
 
     agent_meta = daemon.metadata_store.load_agent_state("agent-1")
-    assert agent_meta.agent_mail_identity
-    assert agent_meta.agent_mail_credentials_ref
-    assert agent_meta.conversation_id
+
+    # Agent Mail identity and credentials are now stored inside the
+    # embedded NateOhaConfig rather than as separate AgentState fields.
+    cfg = agent_meta.nate_oha_config
+    features = getattr(cfg, "features", None)
+    assert features is not None, "Expected NateOhaConfig.features to be populated"
+    agent_mail_cfg = getattr(features, "agent_mail", None)
+    assert agent_mail_cfg is not None, "Expected Agent Mail feature to be configured"
+
+    identity_before = (getattr(agent_mail_cfg, "agent_identity", "") or "").strip()
+    credentials_before = (getattr(agent_mail_cfg, "credentials_ref", "") or "").strip()
+
+    assert identity_before
+    assert credentials_before
+    # ACP session identifiers are established lazily by the async ACP
+    # helpers. At create-time we only require that the conversation_id
+    # field exists on the durable AgentState; it may be empty/None
+    # until an async session has been started.
+    assert hasattr(agent_meta, "conversation_id")
 
     # Start the runtime/scheduler so that runtime state is initialized.
     assert daemon.state.status is RuntimeStatus.STARTING
     daemon.start()
     assert daemon.state.status is RuntimeStatus.RUNNING
 
-    # Launch a real nate_OHA process for the agent using the metadata
+    # Launch a real nate-oha process for the agent using the metadata
     # produced above. Any configuration errors (for example, missing
-    # Agent Mail settings or incompatible nate_OHA version) should
+    # Agent Mail settings or incompatible nate-oha version) should
     # surface as an AcpClientError from start_agent.
     acp_client = daemon.acp_client
     assert isinstance(acp_client, NateOhaAcpClient)
@@ -203,7 +222,7 @@ def test_real_runtime_nate_oha_agent_mail_create_start_resume(tmp_path: Path, mo
     assert isinstance(events, list)
     assert events, "Expected at least one runtime/ACP event for agent-1"
 
-    # Stop the nate_OHA process and confirm that no live subprocess
+    # Stop the nate-oha process and confirm that no live subprocess
     # handle remains for the agent.
     acp_client.stop_agent("agent-1", timeout=acp_client.shutdown_timeout)
 
@@ -247,12 +266,22 @@ def test_real_runtime_nate_oha_agent_mail_create_start_resume(tmp_path: Path, mo
 
     agent_meta2 = daemon2.metadata_store.load_agent_state("agent-1")
 
-    # Agent Mail and ACP identifiers must be reused on resume.
-    assert agent_meta2.agent_mail_identity == agent_meta.agent_mail_identity
-    assert agent_meta2.agent_mail_credentials_ref == agent_meta.agent_mail_credentials_ref
+    # Agent Mail and ACP identifiers must be reused on resume. Identities and
+    # credentials are surfaced via the embedded NateOhaConfig.
+    cfg2 = agent_meta2.nate_oha_config
+    features2 = getattr(cfg2, "features", None)
+    assert features2 is not None, "Expected NateOhaConfig.features to be populated on resume"
+    agent_mail_cfg2 = getattr(features2, "agent_mail", None)
+    assert agent_mail_cfg2 is not None, "Expected Agent Mail feature to be configured on resume"
+
+    identity_after = (getattr(agent_mail_cfg2, "agent_identity", "") or "").strip()
+    credentials_after = (getattr(agent_mail_cfg2, "credentials_ref", "") or "").strip()
+
+    assert identity_after == identity_before
+    assert credentials_after == credentials_before
     assert agent_meta2.conversation_id == agent_meta.conversation_id
 
-    # Start the resumed runtime and launch nate_OHA for the agent again.
+    # Start the resumed runtime and launch nate-oha for the agent again.
     assert daemon2.state.status is RuntimeStatus.STARTING
     daemon2.start()
     assert daemon2.state.status is RuntimeStatus.RUNNING
@@ -267,13 +296,16 @@ def test_real_runtime_nate_oha_agent_mail_create_start_resume(tmp_path: Path, mo
     assert status2.state == "running"
 
     # Fetch agent detail again and confirm that the persisted identity
-    # and conversation identifiers are unchanged across the resume.
+    # and conversation identifiers are unchanged across the resume. The
+    # JSON-RPC / control API always surfaces ``conversation_id`` as a
+    # string, using "" to represent "no persisted conversation" when no
+    # async ACP session has been established yet.
     detail2 = daemon2.get_agent_detail("agent-1", max_events=20)
     agent_payload2 = detail2["agent"]
-    assert agent_payload2["agent_mail_identity"] == agent_meta.agent_mail_identity
-    assert agent_payload2["conversation_id"] == agent_meta.conversation_id
+    assert agent_payload2["agent_mail_identity"] == identity_before
+    assert agent_payload2["conversation_id"] == (agent_meta.conversation_id or "")
 
-    # Stop the nate_OHA process under the resumed daemon and ensure that
+    # Stop the nate-oha process under the resumed daemon and ensure that
     # no subprocess handle remains.
     acp_client2.stop_agent("agent-1", timeout=acp_client2.shutdown_timeout)
 

@@ -146,7 +146,7 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
     project = tmp_path / "project"
     project.mkdir(parents=True, exist_ok=True)
 
-    # Point Nate OHA at the sample profile used throughout this repository
+    # Point nate-oha at the sample profile used throughout this repository
     # for real-path tests. Using an existing config mirrors the quickstart
     # flow and ensures that ``--set runtime.mode=...`` overrides operate on
     # a valid base tree.
@@ -156,14 +156,14 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
     # Take an explicit snapshot of the current environment so that
     # ``load_runtime_config`` does not consult repository-level .env
     # files. We then overlay the adapter-mode selection to force REAL
-    # adapters for both Agent Mail and ACP and supply the Nate OHA
+    # adapters for both Agent Mail and ACP and supply the nate-oha
     # launch settings required by :func:`build_nate_oha_launch_spec`.
     env_snapshot = dict(os.environ)
     env_snapshot.update(
         {
             "NATE_NTM_PROJECT_DIR": str(project),
             "NATE_NTM_ADAPTER_MODE": AdapterKind.REAL.value,
-            # Minimal Nate OHA launch configuration: point Nate OHA at the
+            # Minimal nate-oha launch configuration: point nate-oha at the
             # repository's sample profile and run in "echo" mode so the
             # test focuses on ACP/session semantics rather than model
             # behaviour.
@@ -188,18 +188,22 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
 
     # Seed a single agent with no pre-existing ACP conversation
     # identifier so that start_agent_async must call ``session/new``.
-    base_meta = AgentState(
+    # Agent Mail is optional for this scenario and is therefore omitted
+    # from the durable AgentState schema; the effective nate-oha
+    # configuration is derived purely from the runtime config and
+    # conversation identifier.
+    from types import SimpleNamespace
+
+    launch_metadata = SimpleNamespace(
         agent_id="nav-async-1",
         display_name="Navigator Async 1",
-        agent_mail_identity="",  # Agent Mail is optional for this test.
         conversation_id="",  # Force the "session/new" path.
     )
-    nate_oha_cfg = build_effective_nate_oha_config(config=config, metadata=base_meta)
+    nate_oha_cfg = build_effective_nate_oha_config(config=config, metadata=launch_metadata)  # type: ignore[arg-type]
 
     meta = AgentState(
         agent_id="nav-async-1",
         display_name="Navigator Async 1",
-        agent_mail_identity="",  # Agent Mail is optional for this test.
         conversation_id="",  # Force the "session/new" path.
         nate_oha_config=nate_oha_cfg,
     )
@@ -260,7 +264,7 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
     try:
         # After async start, the canonical conversation identifier is the
         # value persisted into :class:`AgentState.conversation_id` on disk.
-        # For Nate OHA / ACP this must be the opaque ``session_id`` assigned
+        # For nate-oha / ACP this must be the opaque ``session_id`` assigned
         # by the server.
         reloaded_meta = store.load_agent_state(meta.agent_id)
         session_id = reloaded_meta.conversation_id
@@ -427,27 +431,30 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
     agent_mail_project_id = agent_mail_client.ensure_project()
 
     # Allocate an Agent Mail identity + credentials for this agent via
-    # the REAL adapter. The returned values are persisted into
-    # AgentState so that later resume flows and ACP launches can
-    # reuse them.
+    # the REAL adapter. The returned values are persisted into the
+    # effective NateOhaConfig instead of separate AgentState fields so
+    # that later resume flows and ACP launches can reuse them.
     identity, token = agent_mail_client.ensure_agent_identity_with_credentials(agent_id)
     assert identity
     assert token
 
-    base_meta = AgentState(
+    from types import SimpleNamespace
+
+    launch_metadata = SimpleNamespace(
         agent_id=agent_id,
         display_name="Navigator Async Mail 1",
         agent_mail_identity=identity,
         agent_mail_credentials_ref=token or "",
         conversation_id="",  # Force the ACP "session/new" path on first run.
     )
-    nate_oha_cfg = build_effective_nate_oha_config(config=config, metadata=base_meta)
+    nate_oha_cfg = build_effective_nate_oha_config(
+        config=config,
+        metadata=launch_metadata,  # type: ignore[arg-type]
+    )
 
     meta = AgentState(
         agent_id=agent_id,
         display_name="Navigator Async Mail 1",
-        agent_mail_identity=identity,
-        agent_mail_credentials_ref=token or "",
         conversation_id="",  # Force the ACP "session/new" path on first run.
         nate_oha_config=nate_oha_cfg,
     )
@@ -506,9 +513,15 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
         assert isinstance(session_id, str) and session_id
 
         # Agent Mail identity and credentials must remain unchanged
-        # across the ACP session.
-        assert reloaded_meta.agent_mail_identity == identity
-        assert reloaded_meta.agent_mail_credentials_ref == (token or "")
+        # across the ACP session. These are now stored inside the
+        # embedded NateOhaConfig rather than as separate AgentState
+        # fields.
+        cfg = getattr(reloaded_meta, "nate_oha_config", None)
+        features = getattr(cfg, "features", None) if cfg is not None else None
+        agent_mail_cfg = getattr(features, "agent_mail", None) if features is not None else None
+        assert agent_mail_cfg is not None
+        assert (agent_mail_cfg.agent_identity or "").strip() == identity
+        assert (agent_mail_cfg.credentials_ref or "") == (token or "")
 
         # Any ACP events observed during the first run that carry a
         # ``session_id`` in their payload must reference the same
@@ -527,7 +540,7 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
         # Second async run: resume the existing ACP session from
         # persisted metadata using the async lifecycle. This exercises
         # the ``load_session`` path in start_agent_async against a real
-        # Nate OHA instance with Agent Mail enabled.
+        # nate-oha instance with Agent Mail enabled.
         events_run2: list[AgentEvent] = []
 
         resume_meta = store.load_agent_state(agent_id)
@@ -582,7 +595,7 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
     """REAL-path async prompt -> echo -> resume -> replay semantics (Epic 005).
 
     This test extends the basic async session-persistence scenario by
-    driving a full prompt/response cycle through the real Nate OHA ACP
+    driving a full prompt/response cycle through the real nate-oha ACP
     adapter:
 
     * Start a nate-oha ACP session in echo mode via start_agent_async.
@@ -619,18 +632,25 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
 
     agent_id = "nav-async-echo-replay-1"
 
-    base_meta = AgentState(
+    # Build the effective NateOhaConfig for this agent using a minimal
+    # launch-metadata object. Agent Mail is not required for this
+    # echo/replay scenario so only the conversation identifier is
+    # provided.
+    from types import SimpleNamespace
+
+    launch_metadata = SimpleNamespace(
         agent_id=agent_id,
         display_name="Navigator Async Echo Replay",
-        agent_mail_identity="",  # Agent Mail not required for this scenario.
         conversation_id="",      # Force ACP session/new on first run.
     )
-    nate_oha_cfg = build_effective_nate_oha_config(config=config, metadata=base_meta)
+    nate_oha_cfg = build_effective_nate_oha_config(
+        config=config,
+        metadata=launch_metadata,  # type: ignore[arg-type]
+    )
 
     meta = AgentState(
         agent_id=agent_id,
         display_name="Navigator Async Echo Replay",
-        agent_mail_identity="",  # Agent Mail not required for this scenario.
         conversation_id="",      # Force ACP session/new on first run.
         nate_oha_config=nate_oha_cfg,
     )

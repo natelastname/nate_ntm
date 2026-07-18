@@ -9,6 +9,7 @@ without running a real long-lived daemon.
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 from typer.testing import CliRunner
 
@@ -21,11 +22,38 @@ from nate_ntm.runtime.swarm_state import SwarmState
 runner = CliRunner()
 
 
+def _make_cli_env() -> dict[str, str]:
+    """Return a test-local environment forcing FAKE adapters.
+
+    The runtime start CLI should be unit-testable without requiring a
+    live nate-oha binary or Agent Mail service. These tests therefore
+    force FAKE adapters via environment variables and avoid consulting
+    any repository-level .env configuration.
+    """
+
+    env = dict(os.environ)
+    env.update(
+        {
+            "NATE_NTM_ADAPTER_MODE": "fake",
+            "NATE_NTM_AGENT_MAIL_ADAPTER": "fake",
+            "NATE_NTM_ACP_ADAPTER": "fake",
+        }
+    )
+    return env
+
+
+
 def _init_project_with_metadata(tmp_path: Path) -> Path:
     project = tmp_path / "project"
     project.mkdir(parents=True, exist_ok=True)
 
-    config = load_runtime_config(project_path=project)
+    # Use the same FAKE-adapter environment as the CLI invocations so
+    # that metadata initialisation and runtime startup share consistent
+    # adapter selection semantics and do not accidentally depend on
+    # repository-level .env configuration.
+    env = _make_cli_env()
+
+    config = load_runtime_config(project_path=project, env=env)
     store = MetadataStore(config=config)
 
     from datetime import datetime
@@ -34,7 +62,10 @@ def _init_project_with_metadata(tmp_path: Path) -> Path:
     swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
-        agent_mail_project_id="mail-project-1",
+        # For FAKE adapters the Agent Mail project identifier is not
+        # enforced, but we record the project path so that future REAL
+        # runs have a stable key to compare against.
+        agent_mail_project_id=str(config.project_path),
         created_at=now,
         last_updated_at=now,
     )
@@ -56,6 +87,7 @@ def test_runtime_start_resume_with_existing_metadata_succeeds(tmp_path: Path) ->
     result = runner.invoke(
         app,
         ["runtime", "start", "--project", str(project), "--mode", "resume"],
+        env=_make_cli_env(),
     )
 
     assert result.exit_code == 0
@@ -67,6 +99,7 @@ def test_runtime_start_resume_without_metadata_fails(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["runtime", "start", "--project", str(project), "--mode", "resume"],
+        env=_make_cli_env(),
     )
 
     assert result.exit_code != 0
@@ -78,6 +111,7 @@ def test_runtime_start_create_with_existing_metadata_fails(tmp_path: Path) -> No
     result = runner.invoke(
         app,
         ["runtime", "start", "--project", str(project), "--mode", "create"],
+        env=_make_cli_env(),
     )
 
     assert result.exit_code != 0
@@ -91,12 +125,13 @@ def test_runtime_start_create_without_metadata_succeeds_and_writes_swarm(tmp_pat
     result = runner.invoke(
         app,
         ["runtime", "start", "--project", str(project), "--mode", "create"],
+        env=_make_cli_env(),
     )
 
     assert result.exit_code == 0
 
     # Swarm state should now exist and be loadable.
-    config = load_runtime_config(project_path=project)
+    config = load_runtime_config(project_path=project, env=_make_cli_env())
     store = MetadataStore(config=config)
     swarm_path = store.metadata_dir / "swarm.json"
     assert swarm_path.is_file()
@@ -122,6 +157,7 @@ def test_runtime_start_resume_rejects_agents_option(tmp_path: Path) -> None:
             "--agents",
             "2",
         ],
+        env=_make_cli_env(),
     )
 
     # Typer should treat this as a usage error because --agents is only
@@ -145,6 +181,7 @@ def test_runtime_start_create_rejects_zero_agents_option(tmp_path: Path) -> None
             "--agents",
             "0",
         ],
+        env=_make_cli_env(),
     )
 
     # Zero is not a meaningful agent count for create mode.
@@ -167,6 +204,7 @@ def test_runtime_start_create_rejects_negative_agents_option(tmp_path: Path) -> 
             "--agents",
             "-1",
         ],
+        env=_make_cli_env(),
     )
 
     # Negative values are rejected explicitly by the CLI.
@@ -208,6 +246,7 @@ def test_runtime_start_with_control_api_delegates_to_runner(monkeypatch, tmp_pat
             "create",
             "--with-control-api",
         ],
+        env=_make_cli_env(),
     )
 
     assert result.exit_code == 0
@@ -250,6 +289,7 @@ def test_runtime_start_with_control_api_passes_agents_to_runner(monkeypatch, tmp
             "3",
             "--with-control-api",
         ],
+        env=_make_cli_env(),
     )
 
     assert result.exit_code == 0
@@ -264,7 +304,7 @@ def test_runtime_start_with_control_api_passes_agents_to_runner(monkeypatch, tmp
 def test_runtime_start_forwards_adapter_and_nate_oha_cli_flags_to_config_loader(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """Adapter and Nate OHA-related CLI flags are forwarded to the loader.
+    """Adapter and nate-oha-related CLI flags are forwarded to the loader.
 
     This exercises the wiring from the Typer command down to the
     configuration loader without requiring a real runtime or metadata

@@ -70,7 +70,7 @@ def _resolve_runtime_config(
 
     For now we require an explicit `--project` path to keep behavior
     simple and predictable. Adapter-related options and the small set of
-    Nate OHA launch-related options are forwarded to :func:`load_runtime_config`,
+    nate-oha launch-related options are forwarded to :func:`load_runtime_config`,
     which is responsible for validating and normalizing them.
     """
 
@@ -139,7 +139,7 @@ def runtime_start(
         dir_okay=False,
         resolve_path=True,
         help=(
-            "Base Nate OHA JSON configuration file to pass to `nate-oha acp` "
+            "Base nate-oha JSON configuration file to pass to `nate-oha acp` "
             "via --config."
         ),
     ),
@@ -147,14 +147,14 @@ def runtime_start(
         None,
         "--nate-oha-runtime-mode",
         help=(
-            "Default Nate OHA runtime.mode for agents (for example, 'echo' "
+            "Default nate-oha runtime.mode for agents (for example, 'echo' "
             "or 'agent')."
         ),
     ),
     llm_model: Optional[str] = typer.Option(
         None,
         "--llm-model",
-        help="Default LLM model identifier to pass as llm.model to Nate OHA.",
+        help="Default LLM model identifier to pass as llm.model to nate-oha.",
     ),
     llm_api_key: Optional[str] = typer.Option(
         None,
@@ -168,7 +168,7 @@ def runtime_start(
     prompt_soul_content: Optional[str] = typer.Option(
         None,
         "--prompt-soul-content",
-        help="Override prompt.soul_content passed to Nate OHA.",
+        help="Override prompt.soul_content passed to nate-oha.",
     ),
     with_control_api: bool = typer.Option(
         False,

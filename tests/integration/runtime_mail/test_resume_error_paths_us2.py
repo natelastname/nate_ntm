@@ -34,6 +34,7 @@ from nate_ntm.runtime.daemon import (
 from nate_ntm.runtime.metadata_store import MetadataStore
 from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 from nate_ntm.runtime.state import RuntimeStatus
+from ..quickstart.test_resume_swarm_us2 import _install_stub_adapters
 
 
 def _make_project(tmp_path: Path) -> Path:
@@ -62,7 +63,10 @@ def _base_swarm(config: RuntimeConfig) -> SwarmState:
     )
 
 
-def test_resume_errors_when_swarm_state_missing(tmp_path: Path) -> None:
+def test_resume_errors_when_swarm_state_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """T026.1: mode=resume fails fast when swarm state is missing.
 
     Expectation: :class:`MetadataMissingError` is raised before any
@@ -73,11 +77,17 @@ def test_resume_errors_when_swarm_state_missing(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     config: RuntimeConfig = load_runtime_config(project_path=project)
 
+    # Use in-memory stub adapters so these error-path tests remain hermetic.
+    _install_stub_adapters(monkeypatch)
+
     with pytest.raises(MetadataMissingError):
         RuntimeDaemon.resume(config)
 
 
-def test_resume_fails_on_agent_mail_identity_mismatch(tmp_path: Path) -> None:
+def test_resume_fails_on_agent_mail_identity_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """T026.3: Agent Mail identity mismatch for an agent fails resume.
 
     The runtime treats divergence between the adapter-derived
@@ -89,6 +99,9 @@ def test_resume_fails_on_agent_mail_identity_mismatch(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     config: RuntimeConfig = load_runtime_config(project_path=project)
     store = MetadataStore(config=config)
+
+    # Use in-memory stub adapters so these error-path tests remain hermetic.
+    _install_stub_adapters(monkeypatch)
 
     now = datetime(2026, 7, 3, 12, 0, 0)
 
@@ -127,7 +140,10 @@ def test_resume_fails_on_agent_mail_identity_mismatch(tmp_path: Path) -> None:
     assert "Agent Mail identity mismatch on resume" in str(excinfo.value)
 
 
-def test_resume_allows_conversation_id_mismatch(tmp_path: Path) -> None:
+def test_resume_allows_conversation_id_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """T026.4: Pre-populated ACP conversation IDs do not block resume.
 
     At this stage the runtime treats the persisted ``conversation_id`` as an
@@ -140,12 +156,15 @@ def test_resume_allows_conversation_id_mismatch(tmp_path: Path) -> None:
     config: RuntimeConfig = load_runtime_config(project_path=project)
     store = MetadataStore(config=config)
 
+    # Use in-memory stub adapters so these error-path tests remain hermetic.
+    _install_stub_adapters(monkeypatch)
+
     now = datetime(2026, 7, 3, 12, 0, 0)
 
     agent = AgentState(
         agent_id="nav-1",
         display_name="Navigator 1",
-        agent_mail_identity="",  # not relevant for this test
+        nate_oha_config=build_default_config(),
         conversation_id="some-other-conversation",
     )
 
@@ -167,7 +186,10 @@ def test_resume_allows_conversation_id_mismatch(tmp_path: Path) -> None:
     assert daemon.swarm_state.agents["nav-1"].conversation_id == "some-other-conversation"
 
 
-def test_resume_allows_incomplete_legacy_metadata_with_empty_fields(tmp_path: Path) -> None:
+def test_resume_allows_incomplete_legacy_metadata_with_empty_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """T026.5: Empty identity/conversation fields do not block legacy resumes.
 
     For older or hand-crafted metadata that does not yet include
@@ -181,12 +203,15 @@ def test_resume_allows_incomplete_legacy_metadata_with_empty_fields(tmp_path: Pa
     config: RuntimeConfig = load_runtime_config(project_path=project)
     store = MetadataStore(config=config)
 
+    # Use in-memory stub adapters so these error-path tests remain hermetic.
+    _install_stub_adapters(monkeypatch)
+
     now = datetime(2026, 7, 3, 12, 0, 0)
 
     agent = AgentState(
         agent_id="nav-1",
         display_name="Navigator 1",
-        agent_mail_identity="",  # no identity persisted yet
+        nate_oha_config=build_default_config(),
         conversation_id="",  # no conversation persisted yet
     )
 

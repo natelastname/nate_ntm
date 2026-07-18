@@ -23,7 +23,7 @@ async def test_open_nate_oha_acp_client_wires_spawn_and_client_side(
     """Helper uses spawn_stdio_transport + ClientSideConnection wiring.
 
     This test exercises the high-level composition without requiring a
-    real Nate OHA binary or ACP server. It stubs the ACP SDK's
+    real nate-oha binary or ACP server. It stubs the ACP SDK's
     ``spawn_stdio_transport`` and ``ClientSideConnection`` helpers and
     verifies that:
 

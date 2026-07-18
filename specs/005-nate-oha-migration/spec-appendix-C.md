@@ -1,6 +1,6 @@
 ## Appendix C: Resume and ACP Conversation History
 
-Unlike many client/server protocols, resuming a Nate OHA conversation does not reconnect to the conversation at its current endpoint.
+Unlike many client/server protocols, resuming a nate-oha conversation does not reconnect to the conversation at its current endpoint.
 
 Instead, when `nate-oha` is launched with a persisted conversation identifier, the ACP session is reconstructed by replaying the conversation from its beginning. The runtime therefore receives the complete conversation history before continuing with newly generated events.
 
@@ -30,14 +30,14 @@ The persisted conversation identifier remains the canonical identity of the conv
 
 ### ACP as the Source of Truth
 
-The complete conversation history is owned by Nate OHA and exposed through ACP.
+The complete conversation history is owned by nate-oha and exposed through ACP.
 
 `nate_ntm` should treat the ACP stream as the authoritative representation of an agent's execution history rather than attempting to maintain a separate durable event log.
 
 Conceptually:
 
 ``` overflow-visible!
-Nate OHA conversation
+nate-oha conversation
         │
         ▼
 ACP event stream
@@ -52,7 +52,7 @@ AgentEventStream
 Runtime views and supervision
 ```
 
-Because Nate OHA already owns durable conversation history, the runtime does not need to persist a duplicate copy of the ACP event stream.
+Because nate-oha already owns durable conversation history, the runtime does not need to persist a duplicate copy of the ACP event stream.
 
 The runtime's `AgentEventStream` is therefore a bounded in-memory projection of the ACP stream rather than a second source of truth.
 
@@ -61,7 +61,7 @@ The runtime's `AgentEventStream` is therefore a bounded in-memory projection of 
 The runtime is responsible for:
 
 - persisting the ACP-provided `conversation_id`;
-- launching Nate OHA with `--resume <conversation_id>` when appropriate;
+- launching nate-oha with `--resume <conversation_id>` when appropriate;
 - consuming the ACP event stream;
 - rebuilding its runtime state from that stream;
 - exposing agent state and events through the runtime APIs.
@@ -76,11 +76,11 @@ A representative integration test should:
 
 ``` overflow-visible!
 
-1. Launch Nate OHA in echo mode.
+1. Launch nate-oha in echo mode.
 2. Create a new ACP session.
 3. Produce multiple identifiable ACP events.
 4. Persist the returned session_id.
-5. Stop the Nate OHA subprocess.
+5. Stop the nate-oha subprocess.
 6. Relaunch with:
    --resume SESSION_ID
 
@@ -95,10 +95,10 @@ The objective is to demonstrate that conversation continuity is preserved across
 
 ### Design Principle
 
-> Nate OHA owns durable conversation history. ACP exposes that history as an event stream. `nate_ntm` consumes that stream to supervise agents, maintain runtime state, and expose runtime APIs.
+> nate-oha owns durable conversation history. ACP exposes that history as an event stream. `nate_ntm` consumes that stream to supervise agents, maintain runtime state, and expose runtime APIs.
 
 This keeps responsibility cleanly divided:
 
-- **Nate OHA** owns conversations, prompts, LLM execution, and durable history.
+- **nate-oha** owns conversations, prompts, LLM execution, and durable history.
 - **ACP** transports the conversation as a structured event stream.
 - **`nate_ntm`** owns process supervision, scheduling, runtime metadata, and the projection of ACP events into runtime state.

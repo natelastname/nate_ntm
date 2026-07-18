@@ -64,7 +64,7 @@
       // Agent identity used for the bound Agent Mail user.
       "agent_identity": null,
       // Token or reference used to obtain credentials.
-      "credentials_ref": null,
+      "credentials_ref": "AGENT_MAIL_TEST_TOKEN",
       // Upstream mcp_agent_mail base URL.
       "upstream_url": null,
     },

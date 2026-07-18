@@ -12,7 +12,7 @@ from pathlib import Path
 
 from nate_ntm.config.runtime_config import AdapterKind, load_runtime_config
 from nate_ntm.runtime.adapters import create_runtime_adapters
-from nate_ntm.runtime.agent_mail_client import FakeAgentMailClient, McpAgentMailClient
+from nate_ntm.runtime.agent_mail_client import McpAgentMailClient
 from nate_ntm.runtime.acp_client import NateOhaAcpClient
 
 
@@ -31,31 +31,25 @@ def test_real_adapter_mode_uses_nate_oha_acp_client(tmp_path: Path) -> None:
 
     project = _make_project(tmp_path)
 
-    # Build a config that enables REAL only for ACP, keeping the global
-    # adapter mode (and thus Agent Mail) in FAKE mode.
-    env = {
-        "NATE_NTM_PROJECT_DIR": str(project),
-        "NATE_NTM_ACP_ADAPTER": AdapterKind.REAL.value,
-        # Leave NATE_NTM_ADAPTER_MODE at its default ("fake") so Agent
-        # Mail continues to use the in-memory adapter.
-    }
-    config = load_runtime_config(env=env)
+    # Build a config that enables REAL only for ACP via the specific
+    # adapter override. Agent Mail continues to use the canonical
+    # MCP-backed client.
+    config = load_runtime_config(project_path=project, acp_adapter=AdapterKind.REAL)
 
     adapters = create_runtime_adapters(config)
 
     assert isinstance(adapters.acp, NateOhaAcpClient)
-    assert isinstance(adapters.agent_mail, FakeAgentMailClient)
+    assert isinstance(adapters.agent_mail, McpAgentMailClient)
 
 
 def test_global_real_adapter_mode_uses_real_for_both(tmp_path: Path) -> None:
     """Global REAL mode selects real adapters for both integrations."""
 
     project = _make_project(tmp_path)
-    env = {
-        "NATE_NTM_PROJECT_DIR": str(project),
-        "NATE_NTM_ADAPTER_MODE": AdapterKind.REAL.value,
-    }
-    config = load_runtime_config(env=env)
+
+    # Global REAL mode continues to construct the same concrete adapters,
+    # keeping the selection logic simple and forward-only.
+    config = load_runtime_config(project_path=project, adapter_mode=AdapterKind.REAL)
 
     adapters = create_runtime_adapters(config)
 

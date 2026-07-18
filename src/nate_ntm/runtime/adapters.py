@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 from ..config.runtime_config import AdapterKind, RuntimeConfig
 from .acp_client import BaseAcpClient, NateOhaAcpClient
-from .agent_mail_client import BaseAgentMailClient, FakeAgentMailClient, McpAgentMailClient
+from .agent_mail_client import BaseAgentMailClient, McpAgentMailClient
 
 __all__ = ["RuntimeAdapters", "create_runtime_adapters"]
 
@@ -60,21 +60,16 @@ def create_runtime_adapters(config: RuntimeConfig) -> RuntimeAdapters:
 
     This helper inspects the adapter selection fields on ``config`` and
     constructs the appropriate concrete adapter implementations. Agent Mail
-    continues to support both ``AdapterKind.FAKE`` and ``AdapterKind.REAL``,
-    while ACP now always uses :class:`NateOhaAcpClient` as the canonical
-    implementation regardless of adapter mode.
+    now always uses :class:`McpAgentMailClient` as the canonical
+    implementation, while ACP always uses :class:`NateOhaAcpClient`.
     """
 
     mail_kind = _select_adapter_kind(config.adapter_mode, config.agent_mail_adapter)
     acp_kind = _select_adapter_kind(config.adapter_mode, config.acp_adapter)
 
     # Agent Mail adapter -------------------------------------------------
-    if mail_kind is AdapterKind.FAKE:
-        agent_mail: BaseAgentMailClient = FakeAgentMailClient(config=config)
-    elif mail_kind is AdapterKind.REAL:
-        agent_mail = McpAgentMailClient(config=config)
-    else:  # pragma: no cover - defensive
-        raise ValueError(f"Unsupported Agent Mail adapter kind: {mail_kind!r}")
+    # McpAgentMailClient is the canonical Agent Mail implementation in all modes.
+    agent_mail: BaseAgentMailClient = McpAgentMailClient(config=config)
 
     # ACP adapter --------------------------------------------------------
     # NateOhaAcpClient is the canonical ACP implementation in all modes.

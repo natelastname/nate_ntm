@@ -30,7 +30,7 @@ def test_swarm_and_agent_state_round_trip_with_default_layout(tmp_path: Path) ->
 
     This exercises round-trip persistence of a concrete
     :class:`NateOhaConfig` instance through the SwarmState/AgentState object
-    graph without depending on a particular Nate OHA JSON profile layout.
+    graph without depending on a particular nate-oha JSON profile layout.
     """
 
     project = tmp_path / "project"
@@ -91,7 +91,7 @@ def test_swarm_and_agent_state_round_trip_with_default_layout(tmp_path: Path) ->
     assert loaded_agent.conversation_id == agent.conversation_id
     assert loaded_agent.last_known_status == agent.last_known_status
 
-    # Nate OHA configuration should round-trip via SwarmState/AgentState.
+    # nate-oha configuration should round-trip via SwarmState/AgentState.
     assert loaded_agent.nate_oha_config is not None
     assert type(loaded_agent.nate_oha_config) is type(nate_oha_cfg)
     assert loaded_agent.nate_oha_config.model_dump() == nate_oha_cfg.model_dump()

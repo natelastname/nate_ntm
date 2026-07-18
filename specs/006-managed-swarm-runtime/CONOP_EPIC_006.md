@@ -88,7 +88,7 @@ This feature does not:
 - implement or reinterpret the ACP protocol;
 - replace `MetadataStore`;
 - introduce a second durable conversation or event store;
-- redesign Nate OHA session semantics;
+- redesign nate-oha session semantics;
 - distinguish replayed events from newly generated events;
 - implement a new scheduling algorithm;
 - introduce distributed swarm execution;
@@ -150,7 +150,7 @@ An operator starts all configured agents through one swarm-level operation.
 
 ### Independent test
 
-Start a two-agent swarm using real Nate OHA echo-mode subprocesses.
+Start a two-agent swarm using real nate-oha echo-mode subprocesses.
 
 Verify:
 
@@ -188,7 +188,7 @@ Verify:
 
 - membership is restored;
 - conversation IDs are unchanged;
-- existing Nate OHA conversations resume;
+- existing nate-oha conversations resume;
 - prior conversation history flows through the normal event stream;
 - new prompts continue the same conversation;
 - no replacement IDs are synthesized.
@@ -318,7 +318,7 @@ Against a live `mcp_agent_mail` service:
 - create or reuse the project;
 - create or reuse per-agent identities;
 - persist identity and credential metadata;
-- pass Agent Mail settings into Nate OHA launch specifications;
+- pass Agent Mail settings into nate-oha launch specifications;
 - resume without replacing established identities.
 
 ------------------------------------------------------------------------
@@ -1191,7 +1191,7 @@ It must not poll `AgentEventStream`.
 
 Continues to own:
 
-- Nate OHA subprocess creation;
+- nate-oha subprocess creation;
 - ACP connection setup;
 - ACP session creation and resume;
 - prompt and interrupt operations;
@@ -1321,7 +1321,7 @@ Runtime API handlers should delegate to `ManagedSwarm`.
 - **FR-041**: Agent Mail must remain optional.
 - **FR-042**: No Agent Mail request may occur when the feature is disabled.
 - **FR-043**: When enabled, swarm project initialization must occur before agent startup.
-- **FR-044**: When enabled, per-agent identities must be created or restored before Nate OHA launch.
+- **FR-044**: When enabled, per-agent identities must be created or restored before nate-oha launch.
 - **FR-045**: No fake Agent Mail fallback may be introduced.
 
 ## Delegation
@@ -1364,7 +1364,7 @@ Dependency injection is appropriate for tests of coordination failure paths wher
 
 ## Integration tests
 
-Use real Nate OHA echo-mode subprocesses for:
+Use real nate-oha echo-mode subprocesses for:
 
 - one-agent startup;
 - two-agent startup;
@@ -1404,7 +1404,7 @@ The test must use:
 - real `ManagedSwarm`;
 - real `MetadataStore`;
 - real `NateOhaAcpClient`;
-- real Nate OHA echo-mode subprocesses;
+- real nate-oha echo-mode subprocesses;
 - no arbitrary event-related sleeps;
 - event-driven subscriptions.
 
@@ -1476,7 +1476,7 @@ Do not retain transitional compatibility paths that duplicate the aggregate.
 The feature is complete when:
 
 - application code creates or resumes a swarm through `ManagedSwarm`;
-- starting the swarm launches every configured Nate OHA agent;
+- starting the swarm launches every configured nate-oha agent;
 - ACP-assigned conversation IDs are persisted correctly;
 - agent operations no longer require callers to reach into the ACP client;
 - runtime APIs delegate through the swarm abstraction;

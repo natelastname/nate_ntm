@@ -18,8 +18,11 @@ import socket
 
 import pytest
 
+from dataclasses import dataclass, field
+from typing import Dict
+
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
-from nate_ntm.runtime.agent_mail_client import FakeAgentMailClient
+from nate_ntm.runtime.agent_mail_client import BaseAgentMailClient
 from nate_ntm.runtime.adapters import RuntimeAdapters
 from nate_ntm.runtime.acp_client import AcpAgentStatus, AcpClientError, BaseAcpClient, NateOhaAcpClient
 from nate_ntm.runtime.events import AgentEventSource
@@ -50,7 +53,9 @@ def _write_minimal_swarm_state(config: RuntimeConfig) -> None:
     swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
-        agent_mail_project_id="mail-project-1",
+        # Agent Mail project ID is left empty for these minimal-metadata
+        # tests; they do not exercise resume-time project-id validation.
+        agent_mail_project_id="",
         created_at=now,
         last_updated_at=now,
     )
@@ -73,6 +78,45 @@ def _get_agent_mail_identity_from_config(agent: AgentState) -> str:
         return ""
     identity = getattr(agent_mail_cfg, "agent_identity", "") or ""
     return identity.strip()
+
+
+@dataclass(slots=True)
+class _StubAgentMailClient(BaseAgentMailClient):
+    """Minimal in-memory Agent Mail client used by RuntimeDaemon tests.
+
+    The daemon tests exercise Agent Mail wiring and metadata persistence
+    semantics but do not require real Agent Mail network I/O. This stub
+    provides a stable, side-effect free implementation of the
+    :class:`BaseAgentMailClient` interface.
+    """
+
+    config: RuntimeConfig
+    _project_id: str = "stub-mail-project"
+    _identities: Dict[str, str] = field(default_factory=dict)
+
+    def ensure_project(self) -> str:  # type: ignore[override]
+        return self._project_id
+
+    def ensure_agent_identity(self, agent_id: str) -> str:  # type: ignore[override]
+        identity = self._identities.get(agent_id)
+        if identity is None:
+            identity = f"stub-mail-identity:{agent_id}"
+            self._identities[agent_id] = identity
+        return identity
+
+    def ensure_agent_identity_with_credentials(  # type: ignore[override]
+        self, agent_id: str, credentials_hint: str | None = None
+    ) -> tuple[str, str | None]:
+        # Preserve the default BaseAgentMailClient semantics of passing the
+        # credential hint through unchanged.
+        identity = self.ensure_agent_identity(agent_id)
+        return identity, credentials_hint
+
+    def get_unread_mail_flags(self, agent_ids):  # type: ignore[override]
+        # Tests that use this stub either do not depend on unread-mail flags
+        # or explicitly seed event streams; treat all agents as having no
+        # unread mail by default.
+        return {agent_id: False for agent_id in agent_ids}
 
 
 
@@ -120,7 +164,7 @@ def test_runtime_daemon_resume_constructs_state_from_metadata(tmp_path: Path) ->
 
 
 def test_runtime_daemon_create_with_real_acp_persists_nate_oha_metadata(tmp_path: Path) -> None:
-    """create() with REAL-style adapters persists Nate OHA metadata (T217).
+    """create() with REAL-style adapters persists nate-oha metadata (T217).
 
     This exercises the happy-path RuntimeDaemon.create flow using REAL
     adapters for both ACP and Agent Mail. The nate-oha binary and the
@@ -143,9 +187,12 @@ def test_runtime_daemon_create_with_real_acp_persists_nate_oha_metadata(tmp_path
 
     env = {
         "NATE_NTM_PROJECT_DIR": str(project),
-        "NATE_NTM_ADAPTER_MODE": "real",
+        "NATE_NTM_AGENT_MAIL_ADAPTER": "real",
         "NATE_NTM_NATE_OHA_CONFIG": str(base_config),
         "NATE_NTM_NATE_OHA_RUNTIME_MODE": "echo",
+        "NATE_NTM_AGENT_MAIL_ENABLED": "true",
+        "NATE_NTM_AGENT_MAIL_PROJECT": "mail-project-1",
+        "NATE_NTM_AGENT_MAIL_URL": "http://127.0.0.1:8765/api",
     }
     config = load_runtime_config(project_path=project, env=env)
 
@@ -203,9 +250,12 @@ def test_runtime_daemon_create_and_resume_with_real_acp_and_agent_mail(tmp_path:
 
     env = {
         "NATE_NTM_PROJECT_DIR": str(project),
-        "NATE_NTM_ADAPTER_MODE": "real",
+        "NATE_NTM_AGENT_MAIL_ADAPTER": "real",
         "NATE_NTM_NATE_OHA_CONFIG": str(base_config),
         "NATE_NTM_NATE_OHA_RUNTIME_MODE": "echo",
+        "NATE_NTM_AGENT_MAIL_ENABLED": "true",
+        "NATE_NTM_AGENT_MAIL_PROJECT": "mail-project-1",
+        "NATE_NTM_AGENT_MAIL_URL": "http://127.0.0.1:8765/api",
     }
     config = load_runtime_config(project_path=project, env=env)
 
@@ -238,16 +288,16 @@ def test_runtime_daemon_create_populates_nate_oha_config_for_initial_agents(
 ) -> None:
     """create() eagerly embeds NateOhaConfig into initial agent metadata (T217/T228).
 
-    This exercises the create-mode path using fake adapters and a concrete
-    Nate OHA base configuration, verifying that the derived NateOhaConfig is
-    persisted via SwarmState/AgentState and visible through both the swarm-
-    and per-agent metadata views.
+    This exercises the create-mode path using stubbed adapters and a
+    concrete nate-oha base configuration, verifying that the derived
+    NateOhaConfig is persisted via SwarmState/AgentState and visible
+    through both the swarm- and per-agent metadata views.
     """
 
     project = tmp_path / "project"
     project.mkdir(parents=True, exist_ok=True)
 
-    # Create a minimal, schema-valid Nate OHA JSON config on disk by
+    # Create a minimal, schema-valid nate-oha JSON config on disk by
     # serializing the upstream default configuration. This avoids relying on
     # any particular sample profile layout while still exercising
     # load_nate_oha_config/build_effective_nate_oha_config end-to-end.
@@ -264,10 +314,10 @@ def test_runtime_daemon_create_populates_nate_oha_config_for_initial_agents(
     }
     config = load_runtime_config(project_path=project, env=env)
 
-    # Use a fake Agent Mail adapter and a dummy ACP adapter that does not
+    # Use a stub Agent Mail adapter and a dummy ACP adapter that does not
     # interact with the real nate-oha binary. RuntimeDaemon.create only
     # requires that the ACP client exposes an on_event callback attribute.
-    agent_mail = FakeAgentMailClient(config=config)
+    agent_mail = _StubAgentMailClient(config=config)
 
     class DummyAcpClient(BaseAcpClient):
         def start_agent(self, agent_id: str, *, metadata: AgentState) -> None:
@@ -491,18 +541,25 @@ def test_runtime_daemon_acp_events_flow_into_supervisor_stream_with_nate_oha(
     project.mkdir(parents=True, exist_ok=True)
 
     # Take an explicit environment snapshot so the config loader does not
-    # consult any repository-level .env files.
+    # consult any repository-level .env files. Point Nate OHA at the same
+    # sample profile used by the other NateOhaAcpClient tests so that
+    # RuntimeDaemon.create can derive a concrete NateOHAConfig for the
+    # initial agent.
     env_snapshot = dict(os.environ)
+    repo_root = Path(__file__).resolve().parents[3]
+    base_config = repo_root / "nate-oha-profiles" / "profile1.json"
+    env_snapshot["NATE_NTM_NATE_OHA_CONFIG"] = str(base_config)
+    env_snapshot["NATE_NTM_NATE_OHA_RUNTIME_MODE"] = "echo"
     config = load_runtime_config(project_path=project, env=env_snapshot)
 
     from nate_ntm.runtime.acp_client import NateOhaAcpClient
 
     client = NateOhaAcpClient(config=config)
 
-    # Use a fake Agent Mail client so RuntimeDaemon.create can construct the
+    # Use a stub Agent Mail client so RuntimeDaemon.create can construct the
     # initial swarm metadata without external Agent Mail I/O. The ACP client
     # remains the real NateOhaAcpClient.
-    agent_mail = FakeAgentMailClient(config=config)
+    agent_mail = _StubAgentMailClient(config=config)
     adapters = RuntimeAdapters(agent_mail=agent_mail, acp=client)
 
     daemon = RuntimeDaemon.create(config, agent_count=1, adapters=adapters)
@@ -608,7 +665,7 @@ def test_runtime_daemon_agent_detail_persists_running_status_from_nate_oha_acp(
     client = NateOhaAcpClient(config=config, executable="nate-oha")
     client.start_agent("nav-1", metadata=agent_state)
 
-    agent_mail = FakeAgentMailClient(config=config)
+    agent_mail = _StubAgentMailClient(config=config)
     adapters = RuntimeAdapters(agent_mail=agent_mail, acp=client)
 
     daemon = RuntimeDaemon.resume(config, adapters=adapters)
@@ -690,7 +747,10 @@ def test_runtime_daemon_agent_detail_falls_back_to_last_known_status_when_acp_ab
     swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
-        agent_mail_project_id="mail-project-1",
+        # Agent Mail project ID is intentionally left empty here; this test
+        # focuses solely on last_known_status fallback behavior when ACP is
+        # unavailable, not Agent Mail project validation.
+        agent_mail_project_id="",
         created_at=now,
         last_updated_at=now,
         agents={"nav-1": agent_state},

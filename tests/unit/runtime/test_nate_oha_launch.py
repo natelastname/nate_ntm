@@ -3,12 +3,14 @@ from __future__ import annotations
 """Tests for :mod:`nate_ntm.runtime.nate_oha_launch`.
 
 These tests exercise the :class:`NateOhaLaunchSpec` helper, ensuring that
-Nate OHA launches are constructed from a base JSON configuration plus
+nate-oha launches are constructed from a base JSON configuration plus
 runtime-specific overrides (FR-012/FR-013) and that the resulting argv is
 stable and easy to assert on.
 """
 
 from pathlib import Path
+from types import SimpleNamespace
+
 
 from nate_ntm.config.runtime_config import load_runtime_config
 from nate_ntm.runtime.swarm_state import AgentState
@@ -249,7 +251,7 @@ def test_build_nate_oha_launch_spec_minimal(tmp_path: Path) -> None:
 
     config = load_runtime_config(env=env)
 
-    meta = AgentState(agent_id="agent-1", display_name="Agent One")
+    meta = SimpleNamespace(agent_id="agent-1", display_name="Agent One", conversation_id="")
 
     spec = build_nate_oha_launch_spec(config=config, metadata=meta)
     assert isinstance(spec, NateOhaLaunchSpec)
@@ -318,7 +320,7 @@ def test_build_nate_oha_launch_spec_with_conversation_and_agent_mail(tmp_path: P
 
     config = load_runtime_config(env=env)
 
-    meta = AgentState(
+    meta = SimpleNamespace(
         agent_id="agent-1",
         display_name="Agent One",
         agent_mail_identity="agent-mail-identity",
@@ -388,7 +390,7 @@ def test_build_effective_nate_oha_config_uses_launch_spec_overrides(
 ) -> None:
     """build_effective_nate_oha_config reuses the launch-spec override mapping.
 
-    This ensures that the effective Nate OHA configuration seen by the
+    This ensures that the effective nate-oha configuration seen by the
     runtime is derived from the same base-config-plus-overrides contract
     that drives the CLI argv construction.
     """
@@ -412,7 +414,7 @@ def test_build_effective_nate_oha_config_uses_launch_spec_overrides(
     }
 
     config = load_runtime_config(env=env)
-    meta = AgentState(
+    meta = SimpleNamespace(
         agent_id="agent-1",
         display_name="Agent One",
         agent_mail_identity="agent-mail-identity",

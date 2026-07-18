@@ -1,4 +1,4 @@
-# Implementation Plan: Nate OHA Runtime Integration (Epic 005)
+# Implementation Plan: nate-oha Runtime Integration (Epic 005)
 
 **Branch**: `005-nate-oha-migration`
 **Date**: 2026-07-12
@@ -6,9 +6,9 @@
 
 ## Summary
 
-This epic migrates the swarm runtime from the legacy OpenHands-oriented ACP architecture to a Nate OHA–centric runtime architecture.
+This epic migrates the swarm runtime from the legacy OpenHands-oriented ACP architecture to a nate-oha–centric runtime architecture.
 
-Rather than treating ACP as a generic HTTP service, the runtime will treat `nate-oha acp` as the canonical implementation of an agent. Each swarm agent will be represented by a supervised Nate OHA subprocess communicating over the official Agent Client Protocol (ACP) using the maintained ACP Python SDK.
+Rather than treating ACP as a generic HTTP service, the runtime will treat `nate-oha acp` as the canonical implementation of an agent. Each swarm agent will be represented by a supervised nate-oha subprocess communicating over the official Agent Client Protocol (ACP) using the maintained ACP Python SDK.
 
 This is intentionally an architectural replacement rather than an incremental migration. Existing ACP abstractions, fake adapters, and compatibility layers may be removed wherever they complicate the new design.
 
@@ -16,7 +16,7 @@ At the completion of this epic:
 
 - every runtime agent is backed by a `nate-oha acp` subprocess;
 - development (“echo”) and production (“agent”) modes exercise the same ACP implementation;
-- conversation ownership belongs entirely to Nate OHA;
+- conversation ownership belongs entirely to nate-oha;
 - Agent Mail becomes a real optional integration rather than a simulated runtime component;
 - `nate_ntm` is responsible only for orchestration, supervision, scheduling, persistence, and launch configuration.
 
@@ -85,7 +85,7 @@ Owns:
 
 ## Launch Architecture
 
-The runtime launches Nate OHA using a shared configuration plus runtime-specific overrides.
+The runtime launches nate-oha using a shared configuration plus runtime-specific overrides.
 
 Conceptually every agent launch becomes:
 
@@ -132,7 +132,7 @@ nate-oha
 
 It is responsible for:
 
-- launching Nate OHA
+- launching nate-oha
 - supervising the subprocess
 - managing ACP connections
 - translating ACP events
@@ -144,7 +144,7 @@ Protocol mechanics remain entirely inside the ACP SDK.
 
 ## Conversation Ownership
 
-Conversation identifiers belong exclusively to Nate OHA.
+Conversation identifiers belong exclusively to nate-oha.
 
 The runtime:
 
@@ -165,7 +165,7 @@ Agent Mail becomes a runtime integration rather than a runtime simulation.
 When disabled:
 
 - no Agent Mail APIs are contacted;
-- Nate OHA receives no Agent Mail configuration;
+- nate-oha receives no Agent Mail configuration;
 - swarms remain fully functional.
 
 When enabled:
@@ -227,7 +227,8 @@ tests/
 │   ├── runtime_mail/                       # Agent Mail integration + resume
 │   └── quickstart/                         # Runtime CLI + WebSocket control/events
 └── e2e/
-    └── test_real_runtime_nate_oha_agent_mail.py  # Full-stack Nate OHA + Agent Mail
+        	└── test_real_runtime_nate_oha_agent_mail.py  # Full-stack nate-oha + Agent Mail
+
 ```
 
 
@@ -243,7 +244,7 @@ This epic validates orchestration rather than ACP itself.
 
 Integration tests should verify:
 
-- launching Nate OHA
+- launching nate-oha
 - ACP initialization
 - capability negotiation
 - conversation creation
@@ -253,7 +254,7 @@ Integration tests should verify:
 - process restart
 - Agent Mail integration (when enabled)
 
-These tests should use the official ACP SDK and real Nate OHA subprocesses.
+These tests should use the official ACP SDK and real nate-oha subprocesses.
 
 Echo mode should be preferred whenever LLM behavior is irrelevant.
 
@@ -295,7 +296,7 @@ This design satisfies the project constitution.
 
 ✔ Uses the maintained ACP SDK rather than implementing ACP.
 
-✔ Uses Nate OHA rather than embedding OpenHands runtime logic.
+✔ Uses nate-oha rather than embedding OpenHands runtime logic.
 
 ✔ Uses `mcp_agent_mail` directly rather than maintaining a fake implementation.
 
@@ -317,4 +318,4 @@ This design satisfies the project constitution.
 
 None.
 
-The purpose of this epic is to **remove** architectural complexity by collapsing multiple ACP implementations into a single Nate OHA–based architecture, eliminating fake runtime layers, and clearly separating runtime orchestration from protocol implementation.
+The purpose of this epic is to **remove** architectural complexity by collapsing multiple ACP implementations into a single nate-oha–based architecture, eliminating fake runtime layers, and clearly separating runtime orchestration from protocol implementation.

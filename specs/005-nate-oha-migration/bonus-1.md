@@ -230,7 +230,8 @@ This refactor is complete when:
 - multiple subscribers receive the same emitted event independently;
 - timeout and cancellation remove subscriptions;
 - stopping an agent terminates its active event streams;
-- the real Nate OHA integration tests continue to pass with:
+	- the real nate-oha integration tests continue to pass with:
+
 
 ```
 uv run pytest tests/integration/runtime_acp/test_runtime_daemon_acp_async_real_path_epic005.py

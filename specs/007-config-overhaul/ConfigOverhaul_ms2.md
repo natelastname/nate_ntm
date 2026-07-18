@@ -183,9 +183,9 @@ Do not introduce `ManagedSwarm` or `ManagedAgent` in this task.
   - [ ] Remove legacy checks for `agent_state.agent_mail_identity`, `agent_state.agent_mail_credentials_ref`, `RuntimeConfig.agent_mail_project`, `RuntimeConfig.agent_mail_upstream_url`
   - [ ] Ensure `_build_env()` only retains unrelated, still-needed process-correlation variables
 - [ ] Update tests for new config semantics
-  - [ ] `tests/integration/quickstart/test_resume_swarm_us2.py` reads Agent Mail identity directly from embedded `NateOhaConfig`
-  - [ ] Remove `_get_persisted_identity_and_conversation()` fallback behavior
-  - [ ] Ensure tests fail if an `AgentState` lacks a valid effective config
+  - [x] `tests/integration/quickstart/test_resume_swarm_us2.py` reads Agent Mail identity directly from embedded `NateOhaConfig`
+  - [x] Remove `_get_persisted_identity_and_conversation()` fallback behavior
+  - [x] Ensure tests fail if an `AgentState` lacks a valid effective config
 - [ ] Rewrite legacy runtime-mail fixtures and tests
   - [ ] Update `tests/integration/runtime_mail/test_resume_error_paths_us2.py` fixtures to always include valid `NateOhaConfig`
   - [ ] Delete or rewrite the "incomplete legacy metadata" test to drop legacy persisted state support

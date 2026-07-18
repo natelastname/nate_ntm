@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-"""Nate OHA launch specification and command construction helpers.
+"""nate-oha launch specification and command construction helpers.
 
 This module centralizes the construction of the command-line arguments used
-to launch the Nate OHA ACP runtime (``nate-oha acp``).
+to launch the nate-oha ACP runtime (``nate-oha acp``).
 
 It is designed around the base-config-plus-overrides model described in
 ``specs/005-nate-oha-migration/spec.md`` (see FR-012 "+ FR-013" and
 user story P5):
 
-* The runtime always launches Nate OHA from a base JSON configuration
+* The runtime always launches nate-oha from a base JSON configuration
   supplied via ``--config``.
 * Swarm- and agent-specific configuration is supplied via repeated
   ``--set path=value`` arguments.
@@ -17,7 +17,7 @@ user story P5):
   conversation identifier is passed via ``--resume``.
 
 The :class:`NateOhaLaunchSpec` dataclass is an internal, runtime-owned
-representation of a single Nate OHA process launch. It is intentionally
+representation of a single nate-oha process launch. It is intentionally
 narrow and independent of the ACP SDK and runtime metadata types so it can
 be unit tested in isolation and reused across different integration points.
 """
@@ -33,11 +33,11 @@ __all__ = ["NateOhaLaunchSpec", "build_nate_oha_launch_spec"]
 
 @dataclass(frozen=True, slots=True)
 class NateOhaLaunchSpec:
-    """Specification for launching a single Nate OHA ACP process.
+    """Specification for launching a single nate-oha ACP process.
 
     This structure captures the runtime-owned inputs that determine how a
-    Nate OHA agent process should be launched. It does **not** attempt to
-    model the full Nate OHA or OpenHands configuration; instead it focuses
+    nate-oha agent process should be launched. It does **not** attempt to
+    model the full nate-oha or OpenHands configuration; instead it focuses
     on the subset of values the nate_ntm runtime is responsible for:
 
     * Selecting the executable and working directory.
@@ -54,10 +54,10 @@ class NateOhaLaunchSpec:
     """
 
     executable: str
-    """Executable used to launch Nate OHA (for example, ``"nate-oha"``)."""
+    """Executable used to launch nate-oha (for example, ``"nate-oha"``)."""
 
     base_config: Path
-    """Path to the base Nate OHA JSON configuration file passed via
+    """Path to the base nate-oha JSON configuration file passed via
     ``--config``.
     """
 
@@ -69,17 +69,17 @@ class NateOhaLaunchSpec:
     """
 
     runtime_mode: str
-    """Nate OHA runtime mode (for example, ``"echo"`` or ``"agent"``)."""
+    """nate-oha runtime mode (for example, ``"echo"`` or ``"agent"``)."""
 
     # Optional, ACP-owned conversation identifier used when resuming an
-    # existing session. This is supplied to Nate OHA via ``--resume``
+    # existing session. This is supplied to nate-oha via ``--resume``
     # exactly as returned by the ACP ``session/new`` flow.
     conversation_id: str | None = None
 
     # Optional model and credential overrides. The API key is currently
     # passed via a ``--set llm.api_key=...`` argument, which may expose it
     # to local process inspectors. Where possible, prefer secrets embedded
-    # in the base Nate OHA configuration or environment variables rather
+    # in the base nate-oha configuration or environment variables rather
     # than per-launch overrides.
     model: str | None = None
     api_key: str | None = None
@@ -107,7 +107,7 @@ class NateOhaLaunchSpec:
     extra_overrides: Mapping[str, str] = field(default_factory=dict)
 
     def _build_override_mapping(self) -> dict[str, str]:
-        """Return a mapping of Nate OHA config overrides for this spec.
+        """Return a mapping of nate-oha config overrides for this spec.
 
         Keys are configuration paths (for example, ``"runtime.mode"``) and
         values are their corresponding stringified overrides. This helper is
@@ -176,7 +176,7 @@ class NateOhaLaunchSpec:
             yield f"{path}={sets[path]}"
 
     def to_argv(self) -> Sequence[str]:
-        """Render this launch specification as a Nate OHA ``argv`` list.
+        """Render this launch specification as a nate-oha ``argv`` list.
 
         The resulting sequence has the general form:
 
@@ -204,7 +204,7 @@ class NateOhaLaunchSpec:
 
 from ..config.runtime_config import RuntimeConfig
 from .swarm_state import AgentState
-from .nate_oha_config_compat import NateOhaConfig, load_nate_oha_config
+from nate_oha.config import NateOHAConfig, load_nate_oha_config
 
 
 def build_nate_oha_launch_spec(
@@ -215,7 +215,7 @@ def build_nate_oha_launch_spec(
     """Construct a :class:`NateOhaLaunchSpec` from runtime config and metadata.
 
     This helper provides the canonical translation from the runtime's
-    configuration and per-agent metadata into a Nate OHA launch
+    configuration and per-agent metadata into a nate-oha launch
     specification. It does **not** perform any subprocess I/O; callers
     are responsible for passing :meth:`NateOhaLaunchSpec.to_argv` and the
     working directory into :class:`subprocess.Popen`.
@@ -229,8 +229,8 @@ def build_nate_oha_launch_spec(
     * :attr:`RuntimeConfig.nate_oha_runtime_mode` (when set) selects the
       runtime mode; callers may enforce additional defaults.
     * :class:`AgentState.conversation_id` (when non-empty) is treated as
-      an opaque, ACP-owned session identifier and passed through to Nate
-      OHA via ``--resume``.
+      an opaque, ACP-owned session identifier and passed through to
+      nate-oha via ``--resume``.
     * LLM and prompt overrides are taken from
       :attr:`RuntimeConfig.llm_model`, :attr:`RuntimeConfig.llm_api_key`,
       and :attr:`RuntimeConfig.prompt_soul_content`.
@@ -243,7 +243,7 @@ def build_nate_oha_launch_spec(
 
     if config.nate_oha_config_path is None:
         raise ValueError(
-            "RuntimeConfig.nate_oha_config_path must be set to build a Nate OHA launch spec"
+            "RuntimeConfig.nate_oha_config_path must be set to build a nate-oha launch spec"
         )
 
     executable = config.nate_oha_executable
@@ -257,7 +257,7 @@ def build_nate_oha_launch_spec(
     # decisions in here.
     if not config.nate_oha_runtime_mode:
         raise ValueError(
-            "RuntimeConfig.nate_oha_runtime_mode must be set to build a Nate OHA launch spec"
+            "RuntimeConfig.nate_oha_runtime_mode must be set to build a nate-oha launch spec"
         )
 
     runtime_mode = config.nate_oha_runtime_mode
@@ -274,22 +274,57 @@ def build_nate_oha_launch_spec(
     api_key = config.llm_api_key
     prompt_soul_content = config.prompt_soul_content
 
-    # Agent Mail integration. When agent_mail_enabled is explicitly
-    # ``False``, we mark it as disabled in the launch spec regardless of
-    # any per-agent metadata. When it is explicitly ``True``, we require
-    # a minimal set of configuration to be present; otherwise we leave it
-    # as ``None`` and allow Nate OHA's defaults to apply.
+    # Agent Mail integration.
+    #
+    # When ``agent_mail_enabled`` is explicitly ``False`` we always treat the
+    # feature as disabled for this launch regardless of any per-agent
+    # metadata. When it is explicitly ``True`` we trust the caller and emit
+    # whatever project/identity/credentials values are present in the
+    # configuration + metadata; validation of those values is then handled by
+    # :mod:`nate_oha.config`.
+    #
+    # For the common REAL-path tests (for example the quickstart T242 and the
+    # full runtime + Agent Mail e2e) we also support a conservative
+    # auto-enable behaviour: when ``agent_mail_enabled`` is :data:`None` but
+    # *both* a project key and upstream URL are configured **and** per-agent
+    # metadata carries a non-empty Agent Mail identity, we treat the feature as
+    # enabled for this launch and propagate all four fields into the overrides.
+    #
+    # This keeps tests and simple deployments ergonomic (they only need to set
+    # ``NATE_NTM_AGENT_MAIL_PROJECT`` / ``NATE_NTM_AGENT_MAIL_URL`` and rely on
+    # the adapters to allocate identities) while avoiding accidental
+    # partial-configuration when only one side is present (for example, an
+    # upstream URL leaking in from the environment without a bound identity).
     agent_mail_enabled = config.agent_mail_enabled
+
+    # Normalise any per-agent Agent Mail metadata up-front so we can reuse it
+    # in the explicit and auto-enabled paths.
+    metadata_agent_identity = getattr(metadata, "agent_mail_identity", "") or None
+    metadata_credentials_ref = getattr(metadata, "agent_mail_credentials_ref", "") or None
+
     agent_mail_project = None
     agent_mail_agent_identity = None
     agent_mail_credentials_ref = None
     agent_mail_upstream_url = None
 
+    if agent_mail_enabled is None:
+        # Only auto-enable Agent Mail when we have the minimal set of fields
+        # required to build a valid NateOHAConfig: project key, upstream URL,
+        # and a non-empty per-agent identity. Credentials are expected to be
+        # supplied by REAL adapters (for example McpAgentMailClient) but are
+        # not required for the auto-enable decision itself.
+        if (
+            config.agent_mail_project is not None
+            and config.agent_mail_upstream_url is not None
+            and metadata_agent_identity is not None
+        ):
+            agent_mail_enabled = True
+
     if agent_mail_enabled:
         agent_mail_project = config.agent_mail_project
         agent_mail_upstream_url = config.agent_mail_upstream_url
-        agent_mail_agent_identity = getattr(metadata, "agent_mail_identity", "") or None
-        agent_mail_credentials_ref = getattr(metadata, "agent_mail_credentials_ref", "") or None
+        agent_mail_agent_identity = metadata_agent_identity
+        agent_mail_credentials_ref = metadata_credentials_ref
 
     return NateOhaLaunchSpec(
         executable=executable,
@@ -308,11 +343,11 @@ def build_nate_oha_launch_spec(
     )
 
 
-def build_effective_nate_oha_config(*, config: RuntimeConfig, metadata: AgentState) -> NateOhaConfig:
-    """Build the effective :class:`NateOhaConfig` for an agent.
+def build_effective_nate_oha_config(*, config: RuntimeConfig, metadata: AgentState) -> NateOHAConfig:
+    """Build the effective :class:`NateOHAConfig` for an agent.
 
     This helper mirrors the base-config-plus-overrides model used by
-    :func:`build_nate_oha_launch_spec` but returns a validated Nate OHA
+    :func:`build_nate_oha_launch_spec` but returns a validated nate-oha
     configuration object instead of an ``argv`` list. It is intended for
     persistence via :class:`~nate_ntm.runtime.swarm_state.AgentState` and
     for call sites that prefer to read configuration directly rather than
@@ -323,7 +358,7 @@ def build_effective_nate_oha_config(*, config: RuntimeConfig, metadata: AgentSta
     * ``config.nate_oha_config_path`` provides the base JSON file.
     * Overrides are taken from :class:`NateOhaLaunchSpec._build_override_mapping`,
       which corresponds exactly to the ``--set path=value`` arguments that
-      would be passed to the Nate OHA CLI.
+      would be passed to the nate-oha CLI.
     * The ACP-owned conversation/session identifier is **not** embedded in
       the configuration; it remains a separate field on
       :class:`AgentState`.
@@ -337,8 +372,8 @@ def build_effective_nate_oha_config(*, config: RuntimeConfig, metadata: AgentSta
 
 
 
-def materialize_nate_oha_config(*, config: NateOhaConfig, prefix: str = "nate-ntm-nate-oha-config-") -> Path:
-    """Materialize a :class:`NateOhaConfig` into a temporary JSON file.
+def materialize_nate_oha_config(*, config: NateOHAConfig, prefix: str = "nate-ntm-nate-oha-config-") -> Path:
+    """Materialize a :class:`NateOHAConfig` into a temporary JSON file.
 
     The returned path points to a JSON configuration file placed in a
     dedicated temporary directory created via :func:`tempfile.mkdtemp`.
@@ -371,7 +406,7 @@ def materialize_nate_oha_config(*, config: NateOhaConfig, prefix: str = "nate-nt
             )
 
     # Write a stable JSON representation to disk. Sorting keys keeps the
-    # output deterministic for tests while remaining a valid Nate OHA
+    # output deterministic for tests while remaining a valid nate-oha
     # configuration file for the CLI.
     path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
     return path

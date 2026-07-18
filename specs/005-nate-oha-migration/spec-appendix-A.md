@@ -101,7 +101,7 @@ Implications:
 
 Historical code and specs that describe the HTTP OpenHands ACP path are acceptable as archival references, but they must not drive new design constraints under this epic.
 
-## 5. Single ACP implementation; profiles via Nate OHA configuration
+## 5. Single ACP implementation; profiles via nate-oha configuration
 
 There should be **one ACP implementation path** exercised by both development and production swarms:
 
@@ -121,7 +121,7 @@ There should be **one ACP implementation path** exercised by both development an
       OpenHands runtime
 ```
 
-The primary distinction between “fake” and “real” environments is the **Nate OHA configuration**, not separate ACP runtimes:
+The primary distinction between “fake” and “real” environments is the **nate-oha configuration**, not separate ACP runtimes:
 
 - Development / test:
 

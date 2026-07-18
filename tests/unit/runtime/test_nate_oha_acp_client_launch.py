@@ -105,7 +105,7 @@ def test_build_command_requires_persisted_config(tmp_path: Path) -> None:
 
     msg = str(excinfo.value)
     assert "metadata.nate_oha_config" in msg
-    assert "persisted Nate OHA configuration" in msg
+    assert "persisted nate-oha configuration" in msg
 
 
 def test_build_env_sets_conversation_id_and_correlation(tmp_path: Path, monkeypatch) -> None:

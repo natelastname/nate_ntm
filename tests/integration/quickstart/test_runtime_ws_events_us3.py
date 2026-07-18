@@ -24,11 +24,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
 import websockets
 
+from nate_oha.config import build_default_config
 from nate_ntm.api.client import JsonRpcHttpClient
 from nate_ntm.api.jsonrpc import JSONRPC_VERSION
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
@@ -54,16 +56,39 @@ def _make_resume_config_and_metadata(tmp_path: Path) -> RuntimeConfig:
     project = tmp_path / "project"
     project.mkdir(parents=True, exist_ok=True)
 
-    config: RuntimeConfig = load_runtime_config(project_path=project)
+    # Take an explicit environment snapshot so that this helper is
+    # independent of any repository-level .env or process-level
+    # configuration. For the US3 quickstart scenario we force FAKE
+    # adapters so the test does not depend on a live nate-oha binary or
+    # Agent Mail service.
+    env_snapshot = dict(os.environ)
+    env_snapshot.update(
+        {
+            "NATE_NTM_PROJECT_DIR": str(project),
+            "NATE_NTM_ADAPTER_MODE": "fake",
+            "NATE_NTM_AGENT_MAIL_ADAPTER": "fake",
+            "NATE_NTM_ACP_ADAPTER": "fake",
+        }
+    )
+
+    config: RuntimeConfig = load_runtime_config(project_path=project, env=env_snapshot)
     store = MetadataStore(config=config)
 
     now = datetime(2026, 7, 3, 12, 0, 0)
 
-    agent = AgentState(agent_id="nav-1", display_name="Navigator 1")
+    agent = AgentState(
+        agent_id="nav-1",
+        display_name="Navigator 1",
+        nate_oha_config=build_default_config(),
+    )
     swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
-        agent_mail_project_id="mail-project-1",
+        # For FAKE adapters we do not enforce a specific Agent Mail
+        # project identifier, but we still record a stable value so that
+        # future REAL-path invariants have something to compare against
+        # if the swarm is later migrated.
+        agent_mail_project_id=str(config.project_path),
         created_at=now,
         last_updated_at=now,
         agents={agent.agent_id: agent},

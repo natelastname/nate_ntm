@@ -1,8 +1,8 @@
 ---
-description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
+description: "Implementation tasks for Epic 005: nate-oha runtime integration"
 ---
 
-# Tasks: Nate OHA Runtime Integration
+# Tasks: nate-oha runtime integration
 
 **Input**: Design documents under `specs/005-nate-oha-migration/`
 
@@ -48,14 +48,15 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
   - `ClientSideConnection`;
   - initialization and capability negotiation;
   - `session/new`;
-  - the Nate OHA resume-session flow;
+        - the nate-oha resume-session flow;
+
   - prompting;
   - cancellation;
   - session updates;
   - connection shutdown.
 
 -
-  T003 \[P\] Verify the concrete `nate-oha acp` contract against the current Nate OHA implementation and document it in `specs/005-nate-oha-migration/contracts/nate-oha-launch.md`, including:
+  T003 \[P\] Verify the concrete `nate-oha acp` contract against the current nate-oha implementation and document it in `specs/005-nate-oha-migration/contracts/nate-oha-launch.md`, including:
 
   - executable name;
   - `acp` subcommand;
@@ -72,7 +73,7 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
 -
   T005 Verify the `agent-client-protocol` SDK dependency version, update `uv.lock` if needed using `uv sync`, and confirm the project environment can be reconstructed from a clean checkout.
 
-**Checkpoint**: The ACP SDK, Nate OHA launch contract, resume behavior, and Agent Mail contract are explicit and no longer inferred from legacy code.
+**Checkpoint**: The ACP SDK, nate-oha launch contract, resume behavior, and Agent Mail contract are explicit and no longer inferred from legacy code.
 
 ------------------------------------------------------------------------
 
@@ -83,7 +84,7 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
 ## Launch specification
 
 -
-  T010 Define `NateOhaLaunchSpec` in `src/nate_ntm/runtime/nate_oha_launch.py` as the single representation of a Nate OHA process launch, including:
+  T010 Define `NateOhaLaunchSpec` in `src/nate_ntm/runtime/nate_oha_launch.py` as the single representation of a nate-oha process launch, including:
 
   - executable;
   - base configuration path;
@@ -122,7 +123,7 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
 -
   T013 Extend `RuntimeConfig` and `load_runtime_config` in `src/nate_ntm/config/runtime_config.py` with the runtime-owned inputs needed to construct `NateOhaLaunchSpec`, including:
 
-  - Nate OHA executable;
+  - nate-oha executable;
   - base JSON configuration path;
   - runtime mode;
   - optional model;
@@ -132,9 +133,9 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
   - Agent Mail upstream URL.
 
 -
-  T014 Update `src/nate_ntm/cli.py` to expose only the operator-facing Nate OHA launch options required by the specification and pass them into `load_runtime_config`.
+  T014 Update `src/nate_ntm/cli.py` to expose only the operator-facing nate-oha launch options required by the specification and pass them into `load_runtime_config`.
 -
-  T015 \[P\] Add or update configuration and CLI tests under `tests/unit/config/` and `tests/unit/cli/` for the new Nate OHA fields and precedence rules.
+  T015 \[P\] Add or update configuration and CLI tests under `tests/unit/config/` and `tests/unit/cli/` for the new nate-oha fields and precedence rules.
 
 ## ACP runtime types
 
@@ -177,7 +178,7 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
 
 ------------------------------------------------------------------------
 
-# Phase 3: User Story 1 — Launch and Supervise Nate OHA Agents
+# Phase 3: User Story 1 — Launch and Supervise nate-oha agents
 
 **Priority**: P1
 
@@ -268,7 +269,7 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
 -
   T031 \[US1\] Add a runtime-level integration test in `tests/integration/quickstart/test_nate_oha_swarm_start.py` covering multiple echo-mode agents through `RuntimeDaemon`, scheduler status, inspection, and shutdown.
 
-**Checkpoint**: The runtime no longer simulates agent processes. Echo-mode agents run through the full Nate OHA and ACP pipeline.
+**Checkpoint**: The runtime no longer simulates agent processes. Echo-mode agents run through the full nate-oha and ACP pipeline.
 
 ------------------------------------------------------------------------
 
@@ -276,7 +277,7 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
 
 **Priority**: P2
 
-**Goal**: Conversation IDs come from ACP, are persisted by `nate_ntm`, and are supplied back to Nate OHA during resume.
+**Goal**: Conversation IDs come from ACP, are persisted by `nate_ntm`, and are supplied back to nate-oha during resume.
 
 **Independent test**: Create a conversation, persist the `session/new` result, stop the runtime, resume with `--resume`, receive the prior conversation history, and continue the same conversation.
 
@@ -305,7 +306,7 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
   --resume CONVERSATION_ID
   ```
 -
-  T045 \[US2\] Implement the Nate OHA-defined ACP establishment flow after launching with `--resume` in `src/nate_ntm/runtime/acp_client.py`.
+  T045 \[US2\] Implement the nate-oha-defined ACP establishment flow after launching with `--resume` in `src/nate_ntm/runtime/acp_client.py`.
 -
   T046 \[US2\] Verify that the resumed ACP session reports the same canonical session ID as persisted metadata and fail startup with an actionable error on disagreement.
 -
@@ -314,7 +315,7 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
   T048 \[US2\] Update runtime resume logic in `src/nate_ntm/runtime/daemon.py` so it:
 
   - requires a persisted conversation ID for agents being resumed;
-  - delegates session reconstruction to Nate OHA and ACP;
+  - delegates session reconstruction to nate-oha and ACP;
   - does not call obsolete conversation-allocation helpers.
 
 ## Validation
@@ -325,7 +326,7 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
   - creates a session;
   - emits multiple identifiable events;
   - persists the session ID;
-  - stops Nate OHA;
+  - stops nate-oha;
   - relaunches with `--resume`;
   - receives the prior conversation history;
   - sends a new prompt;
@@ -334,7 +335,7 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
 -
   T050 \[US2\] Add a runtime-level create → shutdown → resume test in `tests/integration/quickstart/test_nate_oha_swarm_resume.py` covering metadata persistence, agent reconstruction, status, event inspection, and shutdown.
 
-**Checkpoint**: Conversation identity and durable history are entirely owned by Nate OHA; `nate_ntm` persists only the opaque session ID and transiently projects ACP events.
+**Checkpoint**: Conversation identity and durable history are entirely owned by nate-oha; `nate_ntm` persists only the opaque session ID and transiently projects ACP events.
 
 ------------------------------------------------------------------------
 
@@ -355,11 +356,11 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
   - `src/nate_ntm/cli.py`.
 
 -
-  T061 \[US3\] Replace binary fake/real ACP adapter selection with Nate OHA runtime mode selection in `src/nate_ntm/config/runtime_config.py`.
+  T061 \[US3\] Replace binary fake/real ACP adapter selection with nate-oha runtime mode selection in `src/nate_ntm/config/runtime_config.py`.
 -
   T062 \[US3\] Update runtime construction in `src/nate_ntm/runtime/adapters.py` or its replacement so all ACP-enabled agents receive `NateOhaAcpClient`, regardless of echo or agent mode.
 -
-  T063 \[US3\] Remove fake-ACP-specific tests and fixtures under `tests/` that simulate conversations, turns, or agent status without launching Nate OHA.
+  T063 \[US3\] Remove fake-ACP-specific tests and fixtures under `tests/` that simulate conversations, turns, or agent status without launching nate-oha.
 -
   T064 \[US3\] Add a shared lifecycle test parametrized across echo and agent modes in `tests/integration/runtime_acp/test_nate_oha_runtime_modes.py`.
 
@@ -375,7 +376,7 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
   - `tests/unit/runtime/`;
   - `tests/integration/runtime_acp/`.
 
-**Checkpoint**: There is exactly one ACP implementation: `NateOhaAcpClient`. Echo and agent behavior differ only through Nate OHA configuration.
+**Checkpoint**: There is exactly one ACP implementation: `NateOhaAcpClient`. Echo and agent behavior differ only through nate-oha configuration.
 
 ------------------------------------------------------------------------
 
@@ -385,7 +386,7 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
 
 **Goal**: Agent Mail is absent when disabled and uses only the real `mcp_agent_mail` integration when enabled.
 
-**Independent test**: Run a swarm successfully with Agent Mail disabled, then run an Agent Mail-enabled swarm against a real server and verify project/identity configuration reaches Nate OHA.
+**Independent test**: Run a swarm successfully with Agent Mail disabled, then run an Agent Mail-enabled swarm against a real server and verify project/identity configuration reaches nate-oha.
 
 ## Runtime model
 
@@ -406,7 +407,7 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
   - `src/nate_ntm/config/runtime_config.py`;
   - `src/nate_ntm/cli.py`.
 
-## Nate OHA configuration
+## nate-oha configuration
 
 -
   T073 \[US4\] Update `NateOhaLaunchSpec` so Agent Mail-disabled launches set or inherit:
@@ -459,11 +460,11 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
 -
   T081 Remove remaining fake Agent Mail code, tests, configuration values, and documentation.
 -
-  T082 Remove direct OpenHands or Nate OHA configuration construction from `src/nate_ntm/`; all agent launches must use a base JSON file plus `NateOhaLaunchSpec` overrides.
+  T082 Remove direct OpenHands or nate-oha configuration construction from `src/nate_ntm/`; all agent launches must use a base JSON file plus `NateOhaLaunchSpec` overrides.
 -
   T083 Review `src/nate_ntm/runtime/adapters.py`; either simplify it to construct only real runtime integrations or replace it with a more accurate factory module such as `runtime/integrations.py`.
 -
-  T084 Update runtime state and scheduler code to remove placeholder subprocess handles, transitional status simulation, and code paths no longer reachable after real Nate OHA process supervision is active.
+  T084 Update runtime state and scheduler code to remove placeholder subprocess handles, transitional status simulation, and code paths no longer reachable after real nate-oha process supervision is active.
 -
   T085 Update error types and logging across:
 
@@ -485,7 +486,7 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
 
   - echo-mode startup;
   - agent-mode startup;
-  - base Nate OHA configuration;
+  - base nate-oha configuration;
   - conversation creation and resume;
   - Agent Mail-disabled operation;
   - Agent Mail-enabled operation.
@@ -544,10 +545,10 @@ description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
 
 - Phase 1 is required before protocol implementation.
 - Phase 2 blocks all subsequent runtime work.
-- Phase 3 establishes the real Nate OHA process and ACP path.
+- Phase 3 establishes the real nate-oha process and ACP path.
 - Phase 4 depends on Phase 3 and adds ACP-owned persistence and resume.
 - Phase 5 depends on Phases 3–4 and removes parallel ACP implementations.
-- Phase 6 depends on the launch specification and real Nate OHA process path, but may otherwise proceed alongside late Phase 4 or Phase 5 work.
+- Phase 6 depends on the launch specification and real nate-oha process path, but may otherwise proceed alongside late Phase 4 or Phase 5 work.
 - Phases 7–8 follow the completed migration.
 
 ## Parallel work
@@ -571,7 +572,7 @@ Do not mark tasks parallel when they modify the same central modules, especially
 
 ### Checkpoint A: Real echo-mode agent
 
-After Phase 3, one echo-mode Nate OHA agent can be launched, prompted, inspected, and stopped through the real ACP stack.
+After Phase 3, one echo-mode nate-oha agent can be launched, prompted, inspected, and stopped through the real ACP stack.
 
 ### Checkpoint B: Resume
 
@@ -587,7 +588,7 @@ After Phase 6, swarms work both without Agent Mail and with a real Agent Mail se
 
 ### Checkpoint E: Migration complete
 
-After Phase 8, the runtime operates exclusively through the new Nate OHA architecture and the documented validation scenarios pass.
+After Phase 8, the runtime operates exclusively through the new nate-oha architecture and the documented validation scenarios pass.
 
 ------------------------------------------------------------------------
 
@@ -597,6 +598,6 @@ After Phase 8, the runtime operates exclusively through the new Nate OHA archite
 - Use `uv add` for dependencies and `uv run` for project commands.
 - Do not preserve obsolete code or tests merely to maintain compatibility.
 - Prefer a few strong subprocess integration tests over extensive mocked protocol tests.
-- Do not mock ACP framing, session creation, or event transport when echo-mode Nate OHA can exercise the real path.
+- Do not mock ACP framing, session creation, or event transport when echo-mode nate-oha can exercise the real path.
 - Remove obsolete implementations as their replacements become functional rather than deferring all deletion until the end.
 - Keep ACP protocol models isolated from the scheduler, daemon, and runtime API through explicit translation boundaries.

@@ -38,7 +38,7 @@ import logging
 from ..config.runtime_config import RuntimeConfig
 from .acp_client import BaseAcpClient
 from .adapters import RuntimeAdapters, create_runtime_adapters
-from .agent_mail_client import BaseAgentMailClient, FakeAgentMailClient, McpAgentMailClient
+from .agent_mail_client import BaseAgentMailClient, McpAgentMailClient
 from .agents import AgentSupervisor
 from .metadata_store import MetadataStore
 from .scheduler import RuntimeScheduler
@@ -213,9 +213,8 @@ class RuntimeDaemon:
 
     # Runtime-owned integration clients. These are typically constructed
     # once per process (or logical runtime instance) and reused for the
-    # lifetime of the daemon. For the MVP and US1–US3 they default to
-    # in-memory "fake" adapters, with configuration hooks added in T100
-    # to support additional implementations in later phases.
+    # lifetime of the daemon. In current phases these are production
+    # adapters wired through :mod:`nate_ntm.runtime.adapters`.
     agent_mail_client: BaseAgentMailClient | None = None
     acp_client: BaseAcpClient | None = None
 
@@ -276,7 +275,7 @@ class RuntimeDaemon:
         if agent_count is not None and agent_count > 0:
             # Milestone 2 requires that every persisted AgentState carries a
             # fully resolved NateOhaConfig. When initial agents are requested
-            # we therefore treat the Nate OHA base configuration and runtime
+            # we therefore treat the nate-oha base configuration and runtime
             # mode as mandatory inputs rather than optional hints.
             if config.nate_oha_config_path is None or not config.nate_oha_runtime_mode:
                 raise RuntimeStartupError(
@@ -318,7 +317,7 @@ class RuntimeDaemon:
                     )
                 except ValueError as exc:
                     raise RuntimeStartupError(
-                        f"Failed to build Nate OHA configuration for agent {agent_id!r}: {exc}"
+                        f"Failed to build NateOhaConfig for agent {agent_id!r}: {exc}"
                     ) from exc
 
                 agents[agent_id] = AgentState(
@@ -449,32 +448,6 @@ class RuntimeDaemon:
         # adapter-derived values and the persisted metadata as a hard
         # startup error, since it indicates an FR-009 violation.
         #
-        # For the dev-mode FakeAgentMailClient we only enforce a strict
-        # project-id check when the persisted value uses the fake-client
-        # naming scheme. This keeps older tests that use simple placeholder
-        # IDs (for example, "mail-project-1") valid while ensuring that
-        # create→resume flows that went through :meth:`RuntimeDaemon.create`
-        # are held to a stronger invariant.
-        if swarm.agent_mail_project_id and swarm.agent_mail_project_id.startswith(
-            "fake-mail-project:"
-        ):
-            project_id = agent_mail_client.ensure_project()
-            if project_id != swarm.agent_mail_project_id:
-                logger.error(
-                    "runtime_resume_agent_mail_project_mismatch",
-                    extra={
-                        "swarm_id": swarm.swarm_id,
-                        "project_path": str(swarm.project_path),
-                        "expected_project_id": swarm.agent_mail_project_id,
-                        "actual_project_id": project_id,
-                    },
-                )
-                raise RuntimeStartupError(
-                    "Agent Mail project ID mismatch on resume: "
-                    f"adapter returned {project_id!r}, "
-                    f"metadata has {swarm.agent_mail_project_id!r}"
-                )
-
         # For the production MCP-backed Agent Mail client we always enforce
         # a strict project-id check on resume. The configured
         # :attr:`RuntimeConfig.agent_mail_project` (or its default) is treated
@@ -524,7 +497,7 @@ class RuntimeDaemon:
                 # An empty identity in a config-driven Agent Mail section is
                 # treated as "no binding present" for the purposes of resume
                 # invariants. Earlier phases and the ACP client enforce
-                # non-empty identities when launching nate_OHA.
+                # non-empty identities when launching nate-oha.
                 if not expected_identity:
                     continue
 
@@ -826,10 +799,16 @@ class RuntimeDaemon:
 
         runtime_state = self.state.agents.get(agent_id)
 
-        # Start from the in-memory swarm snapshot derived from the persisted
-        # :class:`SwarmState` so fields like ``last_known_status`` stay in
-        # sync with updates made after the daemon was constructed.
-        metadata = self.swarm_state.agents.get(agent_id)
+        # Prefer the latest persisted per-agent state from the metadata
+        # store so that fields updated by background operations (for
+        # example, ACP session identifiers written by ``start_agent_async``)
+        # are reflected even when this daemon instance did not perform the
+        # write itself. When no swarm/agent state exists yet, fall back to
+        # the in-memory snapshot loaded at construction time.
+        try:
+            metadata = self.metadata_store.load_agent_state(agent_id)
+        except FileNotFoundError:
+            metadata = self.swarm_state.agents.get(agent_id)
 
         # When no live runtime state exists (for example, before the scheduler
         # has started or immediately after a crash), attempt to refresh the
@@ -871,12 +850,24 @@ class RuntimeDaemon:
             if agent_mail_cfg is not None:
                 agent_mail_identity = (getattr(agent_mail_cfg, "agent_identity", "") or "").strip()
 
+        # API-level schema expects ``conversation_id`` to be a string. Treat
+        # ``None`` (or other false-y values) as "no persisted conversation"
+        # and surface that as an empty string so callers do not need to
+        # special-case ``null`` versus ``""``.
+        conversation_id: str = ""
+        if metadata is not None:
+            value = metadata.conversation_id
+            if isinstance(value, str):
+                conversation_id = value
+            elif value is not None:
+                conversation_id = str(value)
+
         agent_payload: dict[str, object] = {
             "agent_id": agent_id,
             "display_name": display_name,
             "status": status_value,
             "agent_mail_identity": agent_mail_identity,
-            "conversation_id": metadata.conversation_id if metadata else "",
+            "conversation_id": conversation_id,
             "last_error": last_error,
         }
 

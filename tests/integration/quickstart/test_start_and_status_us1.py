@@ -23,16 +23,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Tuple
 
+import pytest
+from nate_oha.config import build_default_config
 from nate_ntm.api.server import RuntimeApiServer
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
 from nate_ntm.runtime.daemon import RuntimeDaemon
 from nate_ntm.runtime.metadata_store import MetadataStore
 from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 from nate_ntm.runtime.state import AgentRuntimeState, AgentStatus, RuntimeStatus
+from .test_resume_swarm_us2 import _install_stub_adapters
 
 
 def _make_started_daemon_with_agents(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> Tuple[RuntimeDaemon, RuntimeApiServer, RuntimeConfig]:
     """Create a started RuntimeDaemon with persisted swarm/agent metadata.
 
@@ -48,6 +52,10 @@ def _make_started_daemon_with_agents(
     project = tmp_path / "project"
     project.mkdir(parents=True, exist_ok=True)
 
+    # Use in-memory stub adapters so US1 quickstart tests remain hermetic and
+    # do not talk to real Agent Mail or ACP services.
+    _install_stub_adapters(monkeypatch)
+
     config: RuntimeConfig = load_runtime_config(project_path=project)
     store = MetadataStore(config=config)
 
@@ -60,22 +68,25 @@ def _make_started_daemon_with_agents(
         agent_id="nav-1",
         display_name="Navigator 1",
         last_known_status="Running",
+        nate_oha_config=build_default_config(),
     )
     agent_idle = AgentState(
         agent_id="nav-2",
         display_name="Navigator 2",
         last_known_status="Idle",
+        nate_oha_config=build_default_config(),
     )
     agent_failed = AgentState(
         agent_id="nav-3",
         display_name="Navigator 3",
         last_known_status="Failed",
+        nate_oha_config=build_default_config(),
     )
 
     swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
-        agent_mail_project_id="mail-project-1",
+        agent_mail_project_id="",  # Agent Mail is optional for US1 quickstart tests.
         created_at=now,
         last_updated_at=now,
         agents={
@@ -117,6 +128,7 @@ def _make_started_daemon_with_agents(
 
 def test_start_and_status_us1_runtime_get_status_reports_running_and_counts(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """SC-001: runtime.get_status reports Running with accurate counts.
 
@@ -126,7 +138,7 @@ def test_start_and_status_us1_runtime_get_status_reports_running_and_counts(
     ``runtime.get_status``.
     """
 
-    daemon, server, config = _make_started_daemon_with_agents(tmp_path)
+    daemon, server, config = _make_started_daemon_with_agents(tmp_path, monkeypatch)
 
     # Sanity-check daemon lifecycle state.
     assert daemon.state.status is RuntimeStatus.RUNNING
@@ -150,6 +162,7 @@ def test_start_and_status_us1_runtime_get_status_reports_running_and_counts(
 
 def test_start_and_status_us1_swarm_overview_returns_agent_summaries(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """US1: swarm.get_overview returns per-agent summaries and counts.
 
@@ -162,7 +175,7 @@ def test_start_and_status_us1_swarm_overview_returns_agent_summaries(
       name) with live runtime status and last error.
     """
 
-    daemon, server, config = _make_started_daemon_with_agents(tmp_path)
+    daemon, server, config = _make_started_daemon_with_agents(tmp_path, monkeypatch)
 
     overview = server.get_swarm_overview()
 
@@ -204,7 +217,10 @@ def test_start_and_status_us1_swarm_overview_returns_agent_summaries(
 
 
 
-def test_scheduler_launches_agents_from_swarm_metadata(tmp_path: Path) -> None:
+def test_scheduler_launches_agents_from_swarm_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """US1 dev-mode: scheduler launches agents based on SwarmState.
 
     This test exercises the path where agent runtime state is derived from
@@ -217,18 +233,30 @@ def test_scheduler_launches_agents_from_swarm_metadata(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir(parents=True, exist_ok=True)
 
+    # Use stub adapters so scheduler dev-mode tests remain hermetic and do
+    # not require real Agent Mail or ACP services.
+    _install_stub_adapters(monkeypatch)
+
     config: RuntimeConfig = load_runtime_config(project_path=project)
     store = MetadataStore(config=config)
 
     now = datetime(2026, 7, 3, 12, 0, 0)
 
-    a1 = AgentState(agent_id="nav-1", display_name="Navigator 1")
-    a2 = AgentState(agent_id="nav-2", display_name="Navigator 2")
+    a1 = AgentState(
+        agent_id="nav-1",
+        display_name="Navigator 1",
+        nate_oha_config=build_default_config(),
+    )
+    a2 = AgentState(
+        agent_id="nav-2",
+        display_name="Navigator 2",
+        nate_oha_config=build_default_config(),
+    )
 
     swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
-        agent_mail_project_id="mail-project-1",
+        agent_mail_project_id="",  # Agent Mail is optional for US1 quickstart tests.
         created_at=now,
         last_updated_at=now,
         agents={
@@ -282,7 +310,10 @@ def test_scheduler_launches_agents_from_swarm_metadata(tmp_path: Path) -> None:
 
 
 
-def test_scheduler_failure_and_restart_are_reflected_in_runtime_api(tmp_path: Path) -> None:
+def test_scheduler_failure_and_restart_are_reflected_in_runtime_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """US1 dev-mode: failure/restart transitions surface via the runtime API.
 
     This test builds on ``test_scheduler_launches_agents_from_swarm_metadata``
@@ -297,17 +328,25 @@ def test_scheduler_failure_and_restart_are_reflected_in_runtime_api(tmp_path: Pa
     project = tmp_path / "project"
     project.mkdir(parents=True, exist_ok=True)
 
+    # Use stub adapters so scheduler dev-mode tests remain hermetic and do
+    # not require real Agent Mail or ACP services.
+    _install_stub_adapters(monkeypatch)
+
     config: RuntimeConfig = load_runtime_config(project_path=project)
     store = MetadataStore(config=config)
 
     now = datetime(2026, 7, 3, 12, 0, 0)
 
-    agent = AgentState(agent_id="nav-1", display_name="Navigator 1")
+    agent = AgentState(
+        agent_id="nav-1",
+        display_name="Navigator 1",
+        nate_oha_config=build_default_config(),
+    )
 
     swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
-        agent_mail_project_id="mail-project-1",
+        agent_mail_project_id="",  # Agent Mail is optional for US1 quickstart tests.
         created_at=now,
         last_updated_at=now,
         agents={agent.agent_id: agent},

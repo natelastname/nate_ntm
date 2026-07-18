@@ -8,12 +8,16 @@ implement a full event loop.
 from __future__ import annotations
 
 from datetime import datetime
+from dataclasses import dataclass, field
+from typing import Dict
 
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
+from nate_ntm.runtime.agent_mail_client import BaseAgentMailClient
 from nate_ntm.runtime.agents import AgentSupervisor
 from nate_ntm.runtime.scheduler import RuntimeScheduler
 from nate_ntm.runtime.state import AgentRuntimeState, AgentStatus, RuntimeState
 from nate_ntm.runtime.swarm_state import AgentState, SwarmState
+from nate_oha.config import build_default_config
 
 
 def _make_runtime_state(config: RuntimeConfig) -> RuntimeState:
@@ -40,12 +44,62 @@ def _make_swarm_state(
     )
 
 
+def _make_agent(agent_id: str, display_name: str) -> AgentState:
+    """Construct a minimal AgentState with an embedded NateOhaConfig.
+
+    RuntimeScheduler tests do not depend on the concrete NateOhaConfig
+    contents, but the production model requires this field. Using
+    build_default_config keeps the helper self-contained.
+    """
+
+    return AgentState(
+        agent_id=agent_id,
+        display_name=display_name,
+        nate_oha_config=build_default_config(),
+    )
+
+
+
+
+@dataclass(slots=True)
+class _StubAgentMailClient(BaseAgentMailClient):
+    """Minimal in-memory Agent Mail client used for scheduler tests.
+
+    The scheduler only depends on :meth:`ensure_project` and
+    :meth:`get_unread_mail_flags`, so this stub keeps the behavior
+    deliberately small and side-effect free.
+    """
+
+    config: RuntimeConfig
+    _project_id: str = "stub-project"
+    _unread_flags: Dict[str, bool] = field(default_factory=dict)
+
+    def ensure_project(self) -> str:  # type: ignore[override]
+        return self._project_id
+
+    def ensure_agent_identity(self, agent_id: str) -> str:  # type: ignore[override]
+        # Scheduler does not depend on the concrete identity value; it just
+        # needs a stable string per agent.
+        return f"stub-mail-identity:{agent_id}"
+
+    def get_unread_mail_flags(self, agent_ids):  # type: ignore[override]
+        return {agent_id: self._unread_flags.get(agent_id, False) for agent_id in agent_ids}
+
+    # Test helper -------------------------------------------------------
+
+    def set_unread_for_test(self, agent_id: str, has_unread: bool) -> None:
+        if has_unread:
+            self._unread_flags[agent_id] = True
+        else:
+            self._unread_flags.pop(agent_id, None)
+
+
 def test_scheduler_start_registers_and_launches_agents_via_supervisor(tmp_path) -> None:
     project = tmp_path / "project"
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentState(agent_id="a1", display_name="Agent One")
+    a1 = _make_agent("a1", "Agent One")
     swarm = _make_swarm_state(config, agents={"a1": a1})
 
     supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
@@ -75,7 +129,7 @@ def test_scheduler_start_is_idempotent(tmp_path) -> None:
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentState(agent_id="a1", display_name="Agent One")
+    a1 = _make_agent("a1", "Agent One")
     swarm = _make_swarm_state(config, agents={"a1": a1})
 
     supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
@@ -101,7 +155,7 @@ def test_scheduler_stop_clears_running_flag(tmp_path) -> None:
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentState(agent_id="a1", display_name="Agent One")
+    a1 = _make_agent("a1", "Agent One")
     swarm = _make_swarm_state(config, agents={"a1": a1})
 
     supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
@@ -131,8 +185,8 @@ def test_scheduler_respects_preseeded_runtime_state(tmp_path) -> None:
     state = _make_runtime_state(config)
 
     # Two agents are configured in the swarm state, but one already has runtime state.
-    a1 = AgentState(agent_id="a1", display_name="Agent One")
-    a2 = AgentState(agent_id="a2", display_name="Agent Two")
+    a1 = _make_agent("a1", "Agent One")
+    a2 = _make_agent("a2", "Agent Two")
     swarm = _make_swarm_state(config, agents={"a1": a1, "a2": a2})
 
     preexisting = AgentRuntimeState(
@@ -166,7 +220,7 @@ def test_scheduler_mark_agent_failed_delegates_and_updates_state(tmp_path) -> No
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentState(agent_id="a1", display_name="Agent One")
+    a1 = _make_agent("a1", "Agent One")
     swarm = _make_swarm_state(config, agents={"a1": a1})
 
     supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
@@ -193,7 +247,7 @@ def test_scheduler_restart_agent_delegates_and_marks_idle(tmp_path) -> None:
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentState(agent_id="a1", display_name="Agent One")
+    a1 = _make_agent("a1", "Agent One")
     swarm = _make_swarm_state(config, agents={"a1": a1})
 
     supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
@@ -226,24 +280,23 @@ def test_scheduler_enqueues_mail_received_events_from_unread_flags(tmp_path) -> 
     event for each agent that currently has unread mail.
     """
 
-    from nate_ntm.runtime.agent_mail_client import FakeAgentMailClient
     from nate_ntm.runtime.events import AgentEventSource
 
     project = tmp_path / "project"
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentState(agent_id="a1", display_name="Agent One")
-    a2 = AgentState(agent_id="a2", display_name="Agent Two")
+    a1 = _make_agent("a1", "Agent One")
+    a2 = _make_agent("a2", "Agent Two")
     swarm = _make_swarm_state(config, agents={"a1": a1, "a2": a2})
 
     supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
 
-    # Seed the fake Agent Mail client with an unread message for ``a1``
+    # Seed the stub Agent Mail client with an unread message for ``a1``
     # only. ``a2`` remains without unread mail.
-    mail_client = FakeAgentMailClient(config=config)
+    mail_client = _StubAgentMailClient(config=config)
     mail_client.ensure_project()
-    mail_client.set_unread_count_for_test("a1", 3)
+    mail_client.set_unread_for_test("a1", True)
 
     scheduler = RuntimeScheduler(
         config=config,
@@ -281,20 +334,18 @@ def test_scheduler_unread_mail_poll_is_idempotent(tmp_path) -> None:
     per scheduler instance.
     """
 
-    from nate_ntm.runtime.agent_mail_client import FakeAgentMailClient
-
     project = tmp_path / "project"
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentState(agent_id="a1", display_name="Agent One")
+    a1 = _make_agent("a1", "Agent One")
     swarm = _make_swarm_state(config, agents={"a1": a1})
 
     supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
 
-    mail_client = FakeAgentMailClient(config=config)
+    mail_client = _StubAgentMailClient(config=config)
     mail_client.ensure_project()
-    mail_client.set_unread_count_for_test("a1", 1)
+    mail_client.set_unread_for_test("a1", True)
 
     scheduler = RuntimeScheduler(
         config=config,

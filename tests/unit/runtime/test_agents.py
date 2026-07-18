@@ -14,6 +14,7 @@ from nate_ntm.runtime.agents import AgentSupervisor
 from nate_ntm.runtime.events import AgentEventStream
 from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 from nate_ntm.runtime.state import AgentRuntimeState, AgentStatus, RuntimeState
+from nate_oha.config import build_default_config
 
 
 def _make_runtime_state(config: RuntimeConfig) -> RuntimeState:
@@ -40,14 +41,30 @@ def _make_swarm_state(
     )
 
 
+def _make_agent(agent_id: str, display_name: str) -> AgentState:
+    """Construct a minimal AgentState with an embedded NateOhaConfig.
+
+    AgentSupervisor tests do not depend on concrete NateOhaConfig contents,
+    but the production model requires this field. Using build_default_config
+    keeps the helper self-contained and avoids coupling to runtime config
+    resolution.
+    """
+
+    return AgentState(
+        agent_id=agent_id,
+        display_name=display_name,
+        nate_oha_config=build_default_config(),
+    )
+
+
 def test_iter_configured_agents_yields_metadata_objects(tmp_path) -> None:
     project = tmp_path / "project"
     config = _make_config(project)
     state = _make_runtime_state(config)
 
     # Attach two agents to the swarm state.
-    a1 = AgentState(agent_id="a1", display_name="Agent One")
-    a2 = AgentState(agent_id="a2", display_name="Agent Two")
+    a1 = _make_agent("a1", "Agent One")
+    a2 = _make_agent("a2", "Agent Two")
     swarm = _make_swarm_state(config, agents={"a1": a1, "a2": a2})
 
     supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
@@ -61,7 +78,7 @@ def test_ensure_agent_runtime_state_creates_new_entry_with_event_stream(tmp_path
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    metadata = AgentState(agent_id="agent-1", display_name="Agent One")
+    metadata = _make_agent("agent-1", "Agent One")
     swarm = _make_swarm_state(config, agents={metadata.agent_id: metadata})
 
     supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
@@ -86,7 +103,7 @@ def test_ensure_agent_runtime_state_returns_existing_entry_without_overwrite(tmp
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    metadata = AgentState(agent_id="agent-1", display_name="Agent One")
+    metadata = _make_agent("agent-1", "Agent One")
     swarm = _make_swarm_state(config, agents={metadata.agent_id: metadata})
 
     # Seed state with a pre-existing runtime entry using a different status.
@@ -112,8 +129,8 @@ def test_ensure_agents_registered_populates_state_for_all_metadata(tmp_path) -> 
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentState(agent_id="a1", display_name="Agent One")
-    a2 = AgentState(agent_id="a2", display_name="Agent Two")
+    a1 = _make_agent("a1", "Agent One")
+    a2 = _make_agent("a2", "Agent Two")
     swarm = _make_swarm_state(config, agents={"a1": a1, "a2": a2})
 
     supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
@@ -130,8 +147,8 @@ def test_ensure_agents_registered_preserves_existing_runtime_entries(tmp_path) -
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentState(agent_id="a1", display_name="Agent One")
-    a2 = AgentState(agent_id="a2", display_name="Agent Two")
+    a1 = _make_agent("a1", "Agent One")
+    a2 = _make_agent("a2", "Agent Two")
     swarm = _make_swarm_state(config, agents={"a1": a1, "a2": a2})
 
     # Pre-seed runtime state for one of the agents.
@@ -158,8 +175,8 @@ def test_launch_all_agents_transitions_starting_to_idle_and_sets_subprocess(tmp_
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentState(agent_id="a1", display_name="Agent One")
-    a2 = AgentState(agent_id="a2", display_name="Agent Two")
+    a1 = _make_agent("a1", "Agent One")
+    a2 = _make_agent("a2", "Agent Two")
     swarm = _make_swarm_state(config, agents={"a1": a1, "a2": a2})
 
     supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
@@ -186,7 +203,7 @@ def test_mark_agent_failed_sets_status_and_last_error_and_emits_event(tmp_path) 
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    metadata = AgentState(agent_id="agent-1", display_name="Agent One")
+    metadata = _make_agent("agent-1", "Agent One")
     swarm = _make_swarm_state(config, agents={metadata.agent_id: metadata})
 
     supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
@@ -217,7 +234,7 @@ def test_restart_agent_clears_error_and_marks_idle_and_emits_event(tmp_path) -> 
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    metadata = AgentState(agent_id="agent-1", display_name="Agent One")
+    metadata = _make_agent("agent-1", "Agent One")
     swarm = _make_swarm_state(config, agents={metadata.agent_id: metadata})
 
     supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)
@@ -246,8 +263,8 @@ def test_launch_all_agents_is_idempotent_and_preserves_non_starting_status(tmp_p
     config = _make_config(project)
     state = _make_runtime_state(config)
 
-    a1 = AgentState(agent_id="a1", display_name="Agent One")
-    a2 = AgentState(agent_id="a2", display_name="Agent Two")
+    a1 = _make_agent("a1", "Agent One")
+    a2 = _make_agent("a2", "Agent Two")
     swarm = _make_swarm_state(config, agents={"a1": a1, "a2": a2})
 
     supervisor = AgentSupervisor(config=config, state=state, swarm_state=swarm)

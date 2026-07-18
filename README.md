@@ -15,7 +15,7 @@ This repository currently focuses on the MVP described in
   and ACP
 - Phase 6 production adapters for Agent Mail and ACP are present but still
   evolving. For ACP, the canonical production adapter is now
-  `NateOhaAcpClient` (the nate_OHA ACP runtime) from Feature 002; the older
+  `NateOhaAcpClient` (the nate-oha ACP runtime) from Feature 002; the older
   `OpenHandsAcpClient` remains available as a legacy/compatibility option.
   REAL adapter modes should be treated as experimental and gated behind
   configuration and environment-specific quickstarts (see

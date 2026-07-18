@@ -135,17 +135,17 @@ class RuntimeConfig:
     """
 
     nate_oha_executable: str = "nate-oha"
-    """Executable used to launch Nate OHA (for example, ``"nate-oha"``)."""
+    """Executable used to launch nate-oha (for example, ``"nate-oha"``)."""
 
     nate_oha_config_path: Path | None = None
-    """Optional base Nate OHA JSON configuration file passed via ``--config``.
+    """Optional base nate-oha JSON configuration file passed via ``--config``.
 
     When :data:`None`, higher-level components are responsible for selecting a
     suitable default or refusing to launch until one is provided.
     """
 
     nate_oha_runtime_mode: str | None = None
-    """Optional default Nate OHA ``runtime.mode`` (for example, ``"echo"``).
+    """Optional default nate-oha ``runtime.mode`` (for example, ``"echo"``).
 
     When :data:`None`, the adapter layer may select a mode-specific default
     based on the current feature or test scenario.
@@ -162,14 +162,14 @@ class RuntimeConfig:
     """
 
     prompt_soul_content: str | None = None
-    """Optional ``prompt.soul_content`` override for Nate OHA launches."""
+    """Optional ``prompt.soul_content`` override for nate-oha launches."""
 
     agent_mail_enabled: bool | None = None
     """Optional flag indicating whether Agent Mail integration is enabled.
 
     When :data:`None`, Agent Mail enablement is left to higher-level
     defaults. When :data:`True` or :data:`False`, this value is used
-    directly by adapter construction and Nate OHA launch helpers.
+    directly by adapter construction and nate-oha launch helpers.
     """
 
 
@@ -226,9 +226,9 @@ def load_runtime_config(
     * ``NATE_NTM_ACP_ADAPTER`` – ACP adapter override
     * ``NATE_NTM_AGENT_MAIL_PROJECT`` – Agent Mail project identifier
     * ``NATE_NTM_AGENT_MAIL_URL`` – Agent Mail upstream URL (MCP endpoint)
-    * ``NATE_NTM_NATE_OHA_EXECUTABLE`` – Nate OHA executable name/path
-    * ``NATE_NTM_NATE_OHA_CONFIG`` – base Nate OHA JSON config (``--config``)
-    * ``NATE_NTM_NATE_OHA_RUNTIME_MODE`` – default Nate OHA ``runtime.mode``
+    * ``NATE_NTM_NATE_OHA_EXECUTABLE`` – nate-oha executable name/path
+    * ``NATE_NTM_NATE_OHA_CONFIG`` – base nate-oha JSON config (``--config``)
+    * ``NATE_NTM_NATE_OHA_RUNTIME_MODE`` – default nate-oha ``runtime.mode``
     * ``NATE_NTM_LLM_MODEL`` – default model identifier (``llm.model``)
     * ``NATE_NTM_LLM_API_KEY`` – API key for the configured LLM (``llm.api_key``)
     * ``NATE_NTM_PROMPT_SOUL_CONTENT`` – ``prompt.soul_content`` override
@@ -554,7 +554,7 @@ def _resolve_agent_mail_upstream_url(
 def _resolve_nate_oha_executable(
     executable: Optional[str], env: Mapping[str, str]
 ) -> str:
-    """Resolve the Nate OHA executable from args/env.
+    """Resolve the nate-oha executable from args/env.
 
     The precedence order is:
 
@@ -576,7 +576,7 @@ def _resolve_nate_oha_executable(
 def _resolve_nate_oha_config_path(
     config_path: Optional[Path | str], project_path: Path, env: Mapping[str, str]
 ) -> Path | None:
-    """Resolve the base Nate OHA JSON config path from args/env.
+    """Resolve the base nate-oha JSON config path from args/env.
 
     The precedence order is:
 

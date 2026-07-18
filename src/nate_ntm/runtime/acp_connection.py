@@ -1,4 +1,4 @@
-"""Helpers for wiring Nate OHA ACP subprocesses to the ACP SDK.
+"""Helpers for wiring nate-oha ACP subprocesses to the ACP SDK.
 
 This module provides a small, testable seam around the ACP SDK's stdio
 transport and client connection helpers. It is intentionally narrow:
@@ -48,12 +48,12 @@ async def open_nate_oha_acp_client(
     capabilities: ClientCapabilities | None = None,
     use_unstable_protocol: bool = False,
 ) -> AsyncIterator[tuple[Any, Process, NateNtmAcpProtocolClient]]:
-    """Spawn a Nate OHA ACP subprocess and bind an ACP client connection.
+    """Spawn a nate-oha ACP subprocess and bind an ACP client connection.
 
     Parameters
     ----------
     command:
-        Command line used to launch the Nate OHA ACP runtime. This should
+        Command line used to launch the nate-oha ACP runtime. This should
         include the executable name (for example ``["nate-oha", "acp"]``)
         and any required flags (such as ``"--config"``) but **must not**
         include stdio-related arguments; those are owned by the ACP SDK.

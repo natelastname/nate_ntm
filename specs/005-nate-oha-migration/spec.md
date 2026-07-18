@@ -1,4 +1,4 @@
-# Epic: Nate OHA Runtime Integration
+# Epic: nate-oha Runtime Integration
 
 ## Background
 
@@ -140,7 +140,7 @@ features.agent_mail.credentials_ref
 features.agent_mail.upstream_url
 ```
 
-Future work may expose additional configuration paths, but the runtime should remain responsible only for swarm-specific configuration rather than the entirety of the Nate OHA configuration.
+Future work may expose additional configuration paths, but the runtime should remain responsible only for swarm-specific configuration rather than the entirety of the nate-oha configuration.
 
 ------------------------------------------------------------------------
 
@@ -167,9 +167,9 @@ The priority is achieving a clean runtime architecture around the new `nate-oha`
 
 # Speckit Adapter Section
 ## User Stories / Acceptance
-### P1: Launch and supervise Nate OHA agents through ACP
+### P1: Launch and supervise nate-oha agents through ACP
 
-As an operator, I want `nate_ntm` to launch and supervise `nate-oha` agent subprocesses through the ACP stream so that swarm agents use the current configuration-driven Nate OHA runtime rather than the obsolete HTTP-oriented ACP design.
+As an operator, I want `nate_ntm` to launch and supervise `nate-oha` agent subprocesses through the ACP stream so that swarm agents use the current configuration-driven nate-oha runtime rather than the obsolete HTTP-oriented ACP design.
 
 **Independent test**
 
@@ -177,8 +177,8 @@ Start a swarm with one or more agents and verify that each agent is launched thr
 
 **Acceptance scenarios**
 
-- Given a valid Nate OHA base configuration, when `nate_ntm` starts an agent, then it launches `nate-oha acp --config …` and establishes communication over the ACP stream.
-- Given an active Nate OHA agent, when ACP events are emitted, then `nate_ntm` receives and exposes those events through its runtime event pipeline.
+- Given a valid nate-oha base configuration, when `nate_ntm` starts an agent, then it launches `nate-oha acp --config …` and establishes communication over the ACP stream.
+- Given an active nate-oha agent, when ACP events are emitted, then `nate_ntm` receives and exposes those events through its runtime event pipeline.
 - Given a running agent, when shutdown is requested, then `nate_ntm` performs a graceful ACP and subprocess shutdown before escalating to forced termination.
 - Given obsolete ACP adapter code or interfaces, when the new integration is implemented, then compatibility with the previous HTTP ACP design is not required.
 
@@ -199,7 +199,7 @@ Create a swarm, capture the conversation identifier returned by the ACP `session
 
 ### P3: Exercise production ACP code paths in echo mode
 
-As a developer, I want development and test execution to use `NateOhaAcpClient` with Nate OHA configured in echo mode so that tests exercise the same subprocess, ACP, event, shutdown, and resume paths used in production.
+As a developer, I want development and test execution to use `NateOhaAcpClient` with nate-oha configured in echo mode so that tests exercise the same subprocess, ACP, event, shutdown, and resume paths used in production.
 
 **Independent test**
 
@@ -224,13 +224,13 @@ Run one swarm with Agent Mail disabled and another with Agent Mail enabled again
 
 - Given Agent Mail is disabled, when a swarm starts, then no Agent Mail API is contacted and the swarm remains launchable and resumable.
 - Given Agent Mail is enabled and a server is reachable, when a swarm starts, then `nate_ntm` uses the real `mcp_agent_mail` integration.
-- Given Agent Mail is enabled, when agent configuration is assembled, then the project, identity, credentials reference, and upstream URL are passed to Nate OHA.
+- Given Agent Mail is enabled, when agent configuration is assembled, then the project, identity, credentials reference, and upstream URL are passed to nate-oha.
 - Given a test that depends on Agent Mail, when no Agent Mail server is reachable, then the test fails rather than silently substituting a fake implementation.
 - Given the new architecture, then no fake Agent Mail adapter remains in runtime code.
 
-### P5: Configure Nate OHA from a base JSON file plus runtime overrides
+### P5: Configure nate-oha from a base JSON file plus runtime overrides
 
-As an operator, I want `nate_ntm` to launch agents from a shared Nate OHA JSON configuration and provide only swarm-specific overrides so that Nate OHA remains responsible for its own runtime and prompt configuration.
+As an operator, I want `nate_ntm` to launch agents from a shared nate-oha JSON configuration and provide only swarm-specific overrides so that nate-oha remains responsible for its own runtime and prompt configuration.
 
 **Independent test**
 
@@ -241,69 +241,69 @@ Launch multiple agents from the same base configuration while supplying differen
 - Given a valid base configuration file, when an agent is launched, then `nate_ntm` passes it through `--config`.
 - Given a persisted conversation identifier, when an agent is resumed, then `nate_ntm` also passes `--resume`.
 - Given swarm-specific values, when an agent is launched, then `nate_ntm` supplies them through repeated `--set path=value` arguments.
-- Given configuration owned by Nate OHA, then `nate_ntm` does not reconstruct the complete OpenHands or Nate OHA configuration internally.
-- Given future configuration needs, then additional Nate OHA configuration paths may be added without redesigning the subprocess and ACP integration.
+- Given configuration owned by nate-oha, then `nate_ntm` does not reconstruct the complete OpenHands or nate-oha configuration internally.
+- Given future configuration needs, then additional nate-oha configuration paths may be added without redesigning the subprocess and ACP integration.
 
 ## Functional Requirements
 
 - **FR-001**: The runtime shall replace the obsolete HTTP-oriented ACP integration with a `NateOhaAcpClient` that launches and communicates with `nate-oha acp`.
-- **FR-002**: `NateOhaAcpClient` shall manage the lifecycle of each Nate OHA subprocess, including startup, ACP initialization, event consumption, graceful shutdown, and forced termination when graceful shutdown fails.
+- **FR-002**: `NateOhaAcpClient` shall manage the lifecycle of each nate-oha subprocess, including startup, ACP initialization, event consumption, graceful shutdown, and forced termination when graceful shutdown fails.
 - **FR-003**: The runtime shall receive the canonical conversation identifier from the result of the ACP `session/new` request.
 - **FR-004**: The runtime shall persist the ACP-provided conversation identifier for each managed agent.
 - **FR-005**: When resuming an agent, the runtime shall pass its persisted conversation identifier to `nate-oha acp` through `--resume`.
-- **FR-006**: The runtime shall not generate deterministic or synthetic conversation identifiers for Nate OHA agents.
-- **FR-007**: The runtime shall consume structured ACP events from each Nate OHA subprocess and expose them to the existing runtime event and inspection mechanisms.
+- **FR-006**: The runtime shall not generate deterministic or synthetic conversation identifiers for nate-oha agents.
+- **FR-007**: The runtime shall consume structured ACP events from each nate-oha subprocess and expose them to the existing runtime event and inspection mechanisms.
 - **FR-008**: The runtime shall use the same `NateOhaAcpClient` implementation for development, test, and production execution.
-- **FR-009**: Development and test execution shall configure Nate OHA with `runtime.mode=echo` rather than using a separate fake ACP adapter.
-- **FR-010**: Production agent execution shall configure Nate OHA with `runtime.mode=agent`.
+- **FR-009**: Development and test execution shall configure nate-oha with `runtime.mode=echo` rather than using a separate fake ACP adapter.
+- **FR-010**: Production agent execution shall configure nate-oha with `runtime.mode=agent`.
 - **FR-011**: The previous fake ACP adapter and obsolete generic HTTP ACP implementation may be removed, and compatibility with them shall not be required.
-- **FR-012**: The runtime shall launch Nate OHA from a base JSON configuration supplied through `--config`.
-- **FR-013**: The runtime shall supply swarm-specific Nate OHA configuration using repeated `--set path=value` arguments.
+- **FR-012**: The runtime shall launch nate-oha from a base JSON configuration supplied through `--config`.
+- **FR-013**: The runtime shall supply swarm-specific nate-oha configuration using repeated `--set path=value` arguments.
 - **FR-014**: The runtime shall support overrides for `runtime.mode`, `llm.model`, `llm.api_key`, and `prompt.soul_content`.
 - **FR-015**: When Agent Mail is enabled, the runtime shall support overrides for `features.agent_mail.enabled`, `features.agent_mail.project`, `features.agent_mail.agent_identity`, `features.agent_mail.credentials_ref`, and `features.agent_mail.upstream_url`.
 - **FR-016**: The runtime shall use only a real `mcp_agent_mail` integration when Agent Mail is enabled.
 - **FR-017**: The runtime shall remove runtime support for the fake Agent Mail adapter.
 - **FR-018**: Tests that exercise Agent Mail behavior shall require a reachable `mcp_agent_mail` instance and shall fail if the required connection cannot be established.
 - **FR-019**: Agent Mail shall remain optional for swarm creation, supervision, shutdown, and resume.
-- **FR-020**: When Agent Mail is disabled, the runtime shall not contact Agent Mail APIs and shall configure Nate OHA with Agent Mail disabled.
+- **FR-020**: When Agent Mail is disabled, the runtime shall not contact Agent Mail APIs and shall configure nate-oha with Agent Mail disabled.
 - **FR-021**: The runtime shall remain responsible for swarm metadata, process supervision, scheduling, resume semantics, ACP stream management, and optional Agent Mail coordination.
-- **FR-022**: Nate OHA shall remain responsible for LLM execution, prompt construction, ACP server behavior, OpenHands integration, and Agent Mail feature behavior within the agent runtime.
+- **FR-022**: nate-oha shall remain responsible for LLM execution, prompt construction, ACP server behavior, OpenHands integration, and Agent Mail feature behavior within the agent runtime.
 - **FR-023**: Existing interfaces, implementations, and tests that conflict with the new architecture may be rewritten or removed rather than preserved through compatibility layers.
-- **FR-024**: Tests retained or added for this epic shall validate the new Nate OHA integration architecture rather than preserve obsolete implementation behavior.
+- **FR-024**: Tests retained or added for this epic shall validate the new nate-oha integration architecture rather than preserve obsolete implementation behavior.
 
 ## Key Entities
 
 - **NateOhaAcpClient**: The runtime-owned ACP client responsible for launching `nate-oha acp`, initializing or resuming sessions, consuming ACP events, and managing subprocess lifecycle.
-- **Nate OHA subprocess**: A managed agent runtime process launched from a base JSON configuration and optional `--resume` and `--set` arguments.
-- **ACP session**: The live protocol session between `nate_ntm` and a Nate OHA subprocess.
+- **nate-oha subprocess**: A managed agent runtime process launched from a base JSON configuration and optional `--resume` and `--set` arguments.
+- **ACP session**: The live protocol session between `nate_ntm` and a nate-oha subprocess.
 - **Conversation identifier**: The opaque identifier returned by ACP `session/new`, persisted by `nate_ntm`, and supplied through `--resume` on later launches.
-- **Base Nate OHA configuration**: A JSON configuration file containing stable agent-runtime settings shared across launches.
-- **Runtime override**: A swarm- or agent-specific configuration value passed to Nate OHA through `--set path=value`.
-- **Runtime mode**: The Nate OHA mode selected through `runtime.mode`; `echo` is used for development and protocol testing, while `agent` is used for LLM-backed execution.
-- **Agent Mail configuration**: The optional Nate OHA feature configuration containing project, identity, credentials reference, and upstream URL.
+- **Base nate-oha configuration**: A JSON configuration file containing stable agent-runtime settings shared across launches.
+- **Runtime override**: A swarm- or agent-specific configuration value passed to nate-oha through `--set path=value`.
+- **Runtime mode**: The nate-oha mode selected through `runtime.mode`; `echo` is used for development and protocol testing, while `agent` is used for LLM-backed execution.
+- **Agent Mail configuration**: The optional nate-oha feature configuration containing project, identity, credentials reference, and upstream URL.
 - **mcp_agent_mail instance**: The real coordination service contacted when Agent Mail is enabled and required by Agent Mail-dependent integration tests.
 - **Swarm metadata**: Persisted runtime-owned state required to reconstruct and resume a swarm, including each agent's ACP-provided conversation identifier and optional Agent Mail details.
 
 ## Success Criteria
 
 - **SC-001**: A new agent can be launched through `nate-oha acp`, complete ACP initialization, and return a conversation identifier from `session/new`.
-- **SC-002**: After shutdown, a swarm can be resumed using persisted conversation identifiers, and every resumed agent continues the same Nate OHA conversation.
-- **SC-003**: Echo-mode tests exercise the same Nate OHA subprocess, ACP stream, event parsing, shutdown, and resume implementation used in agent mode.
-- **SC-004**: Structured ACP events emitted by Nate OHA are visible through the runtime's agent inspection and live event subscription interfaces.
+- **SC-002**: After shutdown, a swarm can be resumed using persisted conversation identifiers, and every resumed agent continues the same nate-oha conversation.
+- **SC-003**: Echo-mode tests exercise the same nate-oha subprocess, ACP stream, event parsing, shutdown, and resume implementation used in agent mode.
+- **SC-004**: Structured ACP events emitted by nate-oha are visible through the runtime's agent inspection and live event subscription interfaces.
 - **SC-005**: A swarm can be created, supervised, stopped, and resumed with Agent Mail disabled and without any Agent Mail server available.
 - **SC-006**: When Agent Mail is enabled and a real `mcp_agent_mail` server is available, the runtime supplies the required project and identity configuration and agents can use the real integration.
 - **SC-007**: Agent Mail-dependent integration tests fail clearly when the required `mcp_agent_mail` service cannot be reached.
 - **SC-008**: No runtime execution path depends on the old fake ACP adapter, fake Agent Mail adapter, or obsolete HTTP ACP implementation.
-- **SC-009**: The runtime launches agents using a base Nate OHA JSON configuration plus only the required swarm-specific overrides.
+- **SC-009**: The runtime launches agents using a base nate-oha JSON configuration plus only the required swarm-specific overrides.
 - **SC-010**: Obsolete tests and compatibility code can be removed without preventing validation of the new create, resume, supervision, ACP event, and optional Agent Mail behavior.
 
 ## Assumptions
 
-- `nate-oha acp` remains the canonical command for launching the Nate OHA ACP runtime.
+- `nate-oha acp` remains the canonical command for launching the nate-oha ACP runtime.
 - The ACP `session/new` response contains the conversation identifier that `nate_ntm` must persist.
-- Nate OHA supports `--resume CONVERSATION_ID` for restoring an existing OpenHands conversation.
-- Nate OHA supports repeated `--set path=value` overrides for the configuration paths listed in this epic.
-- A suitable base Nate OHA JSON configuration will be available to `nate_ntm`, including a repository-provided configuration for tests.
+- nate-oha supports `--resume CONVERSATION_ID` for restoring an existing OpenHands conversation.
+- nate-oha supports repeated `--set path=value` overrides for the configuration paths listed in this epic.
+- A suitable base nate-oha JSON configuration will be available to `nate_ntm`, including a repository-provided configuration for tests.
 - Echo mode provides sufficient deterministic behavior for ACP lifecycle and protocol tests without invoking a real LLM.
 - Agent Mail-dependent tests may rely on a separately running `mcp_agent_mail` service.
 - Agent Mail is an optional swarm capability and is not required for core ACP lifecycle or resume behavior.

@@ -20,6 +20,8 @@ import asyncio
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+from nate_oha.config import build_default_config
 from nate_ntm.api.client import JsonRpcHttpClient
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
 from nate_ntm.runtime.daemon import StartupMode
@@ -31,14 +33,23 @@ from nate_ntm.runtime.runner import (
     serve_runtime_control_api,
 )
 from nate_ntm.runtime.state import AgentStatus, RuntimeStatus
+from .test_resume_swarm_us2 import _install_stub_adapters, _make_config
 
 
-def _make_resume_config_and_metadata(tmp_path: Path) -> RuntimeConfig:
+def _make_resume_config_and_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> RuntimeConfig:
     """Create a project with minimal swarm/agent metadata for resume mode.
 
     This mirrors the "create once, then resume" flow used in other US1
     integration tests: swarm and agent metadata are written under
     ``.nate_ntm/``, and the runtime later resumes from that state.
+
+    For US2 and later, each persisted :class:`AgentState` carries a
+    fully-resolved NateOhaConfig so that dev-mode launches remain
+    deterministic and Agent Mail bindings (when enabled) are driven by
+    configuration rather than ad-hoc fields.
     """
 
     project = tmp_path / "project"
@@ -49,11 +60,17 @@ def _make_resume_config_and_metadata(tmp_path: Path) -> RuntimeConfig:
 
     now = datetime(2026, 7, 3, 12, 0, 0)
 
-    agent = AgentState(agent_id="nav-1", display_name="Navigator 1")
+    agent = AgentState(
+        agent_id="nav-1",
+        display_name="Navigator 1",
+        nate_oha_config=build_default_config(),
+    )
     swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
-        agent_mail_project_id="mail-project-1",
+        # Quickstart US1 dev-mode: do not bind a concrete Agent Mail
+        # project; the adapter is stubbed out for these tests.
+        agent_mail_project_id="",
         created_at=now,
         last_updated_at=now,
         agents={agent.agent_id: agent},
@@ -61,10 +78,18 @@ def _make_resume_config_and_metadata(tmp_path: Path) -> RuntimeConfig:
 
     store.save_swarm_state(swarm)
 
+    # Patch the runtime adapters to use the in-memory stubs so that
+    # ``RuntimeDaemon.resume`` and the control API avoid real network
+    # calls or external Nate OHA processes.
+    _install_stub_adapters(monkeypatch)
+
     return config
 
 
-def test_runtime_ws_control_api_us1_status_and_shutdown(tmp_path: Path) -> None:
+def test_runtime_ws_control_api_us1_status_and_shutdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """US1: runtime.get_status and runtime.shutdown over HTTP JSON-RPC.
 
     This test runs a :class:`RuntimeDaemon` plus
@@ -78,7 +103,7 @@ def test_runtime_ws_control_api_us1_status_and_shutdown(tmp_path: Path) -> None:
     async def main() -> None:
         # Arrange: create project, metadata, and a runtime control context
         # using resume semantics.
-        config = _make_resume_config_and_metadata(tmp_path)
+        config = _make_resume_config_and_metadata(tmp_path, monkeypatch)
 
         # Use an ephemeral port for the control API server to avoid clashes
         # with other tests or local processes. The actual bound port is
@@ -153,7 +178,10 @@ def test_runtime_ws_control_api_us1_status_and_shutdown(tmp_path: Path) -> None:
 
 
 
-def test_runtime_ws_control_api_us1_create_with_agents_status_and_overview(tmp_path: Path) -> None:
+def test_runtime_ws_control_api_us1_create_with_agents_status_and_overview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """US1.5: create-mode startup with a non-empty fake swarm.
 
     This test mirrors a CLI-driven flow of starting the runtime in
@@ -167,10 +195,11 @@ def test_runtime_ws_control_api_us1_create_with_agents_status_and_overview(tmp_p
     """
 
     async def main() -> None:
-        project = tmp_path / "project"
-        project.mkdir(parents=True, exist_ok=True)
-
-        config: RuntimeConfig = load_runtime_config(project_path=project)
+        # Build a runtime config with Nate OHA and Agent Mail wiring
+        # consistent with the US2 quickstart tests, and rely on in-memory
+        # stub adapters so no external services are contacted.
+        config: RuntimeConfig = _make_config(tmp_path)
+        _install_stub_adapters(monkeypatch)
 
         ctx: RuntimeControlContext = create_runtime_control_context(
             config,

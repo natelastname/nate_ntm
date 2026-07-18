@@ -261,13 +261,13 @@ Key points:
 
 ---
 
-### 3.3 Feature-specific docs: nate_ntm runtime and nate_OHA ACP
+### 3.3 Feature-specific docs: nate_ntm runtime and nate-oha ACP
 
 For work on the nate_ntm Swarm Runtime Orchestrator and its ACP adapters:
 
 - Feature 001 (`specs/001-swarm-runtime-orchestrator/`) defines the core
   runtime, configuration model, and MVP quickstart.
-- Feature 002 (`specs/002-nate-oha-acp-adapter/`) defines the nate_OHA
+- Feature 002 (`specs/002-nate-oha-acp-adapter/`) defines the nate-oha
   production ACP adapter (`NateOhaAcpClient`) and its process-launch
   contract.
 

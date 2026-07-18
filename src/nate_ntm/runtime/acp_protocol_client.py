@@ -70,7 +70,7 @@ class NateNtmAcpProtocolClient(Client):
 
         # The last ACP session identifier observed via `session_update`.
         # This is advisory only; the canonical conversation identity is
-        # owned by Nate OHA / ACP and surfaced through the higher-level
+        # owned by nate-oha / ACP and surfaced through the higher-level
         # NateOhaAcpClient adapter.
         self._session_id: str | None = None
 

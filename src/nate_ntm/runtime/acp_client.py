@@ -7,7 +7,7 @@ interact with ACP-backed agent runtimes.
 
 Concrete implementation in this branch:
 
-* :class:`NateOhaAcpClient` – the nate_OHA-backed ACP adapter used as the
+* :class:`NateOhaAcpClient` – the nate-oha-backed ACP adapter used as the
   canonical implementation for the nate_ntm runtime in all modes.
 """
 
@@ -134,7 +134,7 @@ class AcpAgentSession:
     """Runtime-owned state for a live ACP-backed agent session.
 
     This structure captures the resources and identifiers needed to
-    supervise a single Nate OHA / ACP session from the runtime's
+    supervise a single nate-oha / ACP session from the runtime's
     perspective. It is intentionally narrow and does not expose ACP SDK
     types directly; concrete adapters such as :class:`NateOhaAcpClient`
     are responsible for storing whatever rich SDK objects are required
@@ -152,9 +152,9 @@ class AcpAgentSession:
     conversation_id: str
     """Opaque, ACP-owned conversation/session identifier.
 
-    The runtime treats this as an opaque token obtained from Nate OHA
-    (for example via ``session/new``) and persists it only for resume
-    and correlation purposes.
+    The runtime treats this as an opaque token obtained from the nate-oha
+    ACP runtime (for example via ``session/new``) and persists it only for
+    resume and correlation purposes.
     """
 
     process: Any
@@ -197,11 +197,11 @@ class AcpAgentSession:
 
 @dataclass(slots=True)
 class NateOhaProcessRecord:
-    """In-memory supervision record for a nate_OHA subprocess.
+    """In-memory supervision record for a nate-oha subprocess.
 
     This mirrors the conceptual model described in
     ``specs/002-nate-oha-acp-adapter/data-model.md`` section 2.1.
-    ``NateOhaAcpClient`` maintains one record per nate_OHA–backed agent.
+    ``NateOhaAcpClient`` maintains one record per nate-oha–backed agent.
     """
 
     agent_id: str
@@ -338,12 +338,12 @@ class BaseAcpClient:
 
 @dataclass(slots=True)
 class NateOhaAcpClient(BaseAcpClient):
-    """Production ACP adapter that launches and supervises ``nate_OHA``.
+    """Production ACP adapter that launches and supervises the nate-oha runtime.
 
     NateOhaAcpClient is the canonical production implementation of
     :class:`BaseAcpClient` for the nate_ntm runtime. It owns the lifecycle of
-    a dedicated ``nate_OHA`` process per managed agent and reports
-    adapter-level status via :class:`AcpAgentStatus`.
+    a dedicated nate-oha process per managed agent and reports adapter-level
+    status via :class:`AcpAgentStatus`.
 
     The initial implementation focuses on the process-supervision contract
     described in the Feature 002 spec. Conversation semantics and ACP event
@@ -352,11 +352,11 @@ class NateOhaAcpClient(BaseAcpClient):
 
     config: RuntimeConfig
 
-    #: Executable used to launch nate_OHA. This may be overridden in tests or
-    #: deployment-specific configuration if needed.
+    #: Executable used to launch the nate-oha CLI. This may be overridden in
+    #: tests or deployment-specific configuration if needed.
     executable: str = "nate_OHA"
 
-    #: Maximum time to wait for initial nate_OHA readiness checks.
+    #: Maximum time to wait for initial nate-oha readiness checks.
     startup_timeout: float = 15.0
 
     #: Default timeout for graceful shutdown requests.
@@ -364,7 +364,7 @@ class NateOhaAcpClient(BaseAcpClient):
     def __post_init__(self) -> None:
         """Initialise adapter defaults from :class:`RuntimeConfig`.
 
-        The Nate OHA executable used for launches is always taken from the
+        The nate-oha CLI executable used for launches is always taken from the
         associated :class:`RuntimeConfig` so that tests and deployments can
         override it via ``nate_oha_executable`` or the corresponding
         environment variable.
@@ -398,7 +398,7 @@ class NateOhaAcpClient(BaseAcpClient):
 
     # Cache of per-agent conversation identifiers for this adapter instance.
 
-    # Materialized Nate OHA configuration directories keyed by ``agent_id``.
+    # Materialized nate-oha configuration directories keyed by ``agent_id``.
     # These are created on-demand when a launch requires a config file and
     # are cleaned up when the corresponding agent is stopped.
     _temp_config_dirs: Dict[str, str] = field(default_factory=dict, init=False)
@@ -631,13 +631,13 @@ class NateOhaAcpClient(BaseAcpClient):
     # ------------------------------------------------------------------
 
     def start_agent(self, agent_id: str, *, metadata: AgentState) -> None:
-        """Launch the nate_OHA ACP process backing ``agent_id``.
+        """Launch the nate-oha ACP process backing ``agent_id``.
 
-        This implementation follows the nate_OHA process-launch contract at a
+        This implementation follows the nate-oha process-launch contract at a
         high level:
 
-        * Ensure the nate_OHA binary is compatible via :meth:`_check_version`.
-        * Spawn a dedicated nate_OHA process for the agent.
+        * Ensure the nate-oha binary is compatible via :meth:`_check_version`.
+        * Spawn a dedicated nate-oha process for the agent.
         * Create/update the in-memory :class:`NateOhaProcessRecord`.
         * Perform a lightweight startup check and transition the record to a
           running or failed state.
@@ -675,11 +675,11 @@ class NateOhaAcpClient(BaseAcpClient):
                 restart_count=existing.restart_count if existing else 0,
             )
             self._processes[agent_id] = record
-            # Best-effort cleanup of any materialized Nate OHA config created
+            # Best-effort cleanup of any materialized nate-oha config created
             # for this launch attempt.
             self._cleanup_temp_config(agent_id)
             raise AcpClientError(
-                f"Failed to launch nate_OHA process for agent {agent_id!r}: {message}"
+                f"Failed to launch nate-oha process for agent {agent_id!r}: {message}"
             ) from exc
 
         record = NateOhaProcessRecord(
@@ -709,7 +709,7 @@ class NateOhaAcpClient(BaseAcpClient):
         if retcode is not None:
             record.status = "failed"
             record.last_exit_code = retcode
-            record.last_error = f"nate_OHA exited during startup with code {retcode}"
+            record.last_error = f"nate-oha exited during startup with code {retcode}"
 
             self._emit_event(
                 self._make_process_event(
@@ -720,7 +720,7 @@ class NateOhaAcpClient(BaseAcpClient):
             )
 
             raise AcpClientError(
-                f"nate_OHA process for agent {agent_id!r} exited during startup with code {retcode}"
+                f"nate-oha process for agent {agent_id!r} exited during startup with code {retcode}"
             )
 
         record.status = "running"
@@ -737,9 +737,9 @@ class NateOhaAcpClient(BaseAcpClient):
     # ------------------------------------------------------------------
 
     async def start_agent_async(self, agent_id: str, *, metadata: AgentState) -> None:
-        """Asynchronously launch or attach to the nate_OHA ACP runtime.
+        """Asynchronously launch or attach to the nate-oha ACP runtime.
 
-        This implementation wires the nate_OHA subprocess into the official
+        This implementation wires the nate-oha subprocess into the official
         ACP SDK using :func:`open_nate_oha_acp_client` and establishes an ACP
         session for ``agent_id`` via :class:`acp.client.ClientSideConnection`.
 
@@ -756,14 +756,14 @@ class NateOhaAcpClient(BaseAcpClient):
         if session is not None and session.status in {"starting", "running"}:
             return
 
-        # Construct the nate_OHA command and environment using the existing
+        # Construct the nate-oha command and environment using the existing
         # helpers so that process-launch semantics remain consistent with the
         # synchronous implementation.
         cmd = self._build_command(agent_id, metadata)
         env = self._build_env(agent_id, metadata)
 
         # ``open_nate_oha_acp_client`` is an async context manager that binds
-        # the nate_OHA subprocess stdio to an ACP client connection. We call
+        # the nate-oha subprocess stdio to an ACP client connection. We call
         # ``__aenter__`` manually here so that the session can outlive this
         # method and be shut down later by :meth:`stop_agent_async`.
         cm = open_nate_oha_acp_client(
@@ -787,7 +787,7 @@ class NateOhaAcpClient(BaseAcpClient):
                     # Suppress secondary errors during cleanup; the original
                     # exception is what we surface to callers.
                     pass
-            # Best-effort cleanup of any materialized Nate OHA config created
+            # Best-effort cleanup of any materialized nate-oha config created
             # for this launch attempt.
             self._cleanup_temp_config(agent_id)
             raise AcpClientError(
@@ -806,7 +806,7 @@ class NateOhaAcpClient(BaseAcpClient):
         )
 
         # Determine whether we are resuming an existing conversation or
-        # creating a new one. For Nate OHA / ACP, the authoritative
+        # creating a new one. For nate-oha / ACP, the authoritative
         # conversation identifier is the opaque ``session_id`` returned by
         # the ACP "session/new" operation. When a non-empty
         # ``metadata.conversation_id`` is present we treat it as a previously
@@ -889,7 +889,7 @@ class NateOhaAcpClient(BaseAcpClient):
             # Regardless of whether shutdown succeeds or fails, terminate any
             # active event subscriptions for this agent so callers do not wait
             # indefinitely on a closed session, and clean up any temporary
-            # Nate OHA configuration created for the agent.
+            # nate-oha configuration created for the agent.
             self._close_event_subscribers(agent_id)
             self._cleanup_temp_config(agent_id)
 
@@ -941,7 +941,7 @@ class NateOhaAcpClient(BaseAcpClient):
     def start_turn(self, agent_id: str, prompt: str | None = None) -> str:  # pragma: no cover - placeholder
         """Start a new ACP turn for ``agent_id``.
 
-        Turn semantics for nate_OHA-backed agents are implemented in
+        Turn semantics for nate-oha-backed agents are implemented in
         follow-up tasks; this placeholder exists so that tests can be written
         against the intended interface.
         """
@@ -949,7 +949,7 @@ class NateOhaAcpClient(BaseAcpClient):
         raise NotImplementedError("NateOhaAcpClient.start_turn is not implemented yet")
 
     def stop_agent(self, agent_id: str, *, timeout: float) -> None:
-        """Request a graceful stop for the nate_OHA process backing ``agent_id``.
+        """Request a graceful stop for the nate-oha process backing ``agent_id``.
 
         The method attempts a graceful termination first (``SIGTERM`` via
         :meth:`subprocess.Popen.terminate`) and escalates to a forced kill if
@@ -978,7 +978,7 @@ class NateOhaAcpClient(BaseAcpClient):
 
             # Terminate any active event subscriptions for this agent so that
             # callers do not wait indefinitely on a non-existent process, and
-            # clean up any temporary Nate OHA configuration for the agent.
+            # clean up any temporary nate-oha configuration for the agent.
             self._close_event_subscribers(agent_id)
             self._cleanup_temp_config(agent_id)
             return
@@ -989,7 +989,7 @@ class NateOhaAcpClient(BaseAcpClient):
             record.last_exit_code = retcode
             record.status = "terminated" if retcode == 0 else "failed"
             if retcode != 0 and not record.last_error:
-                record.last_error = f"nate_OHA exited with code {retcode}"
+                record.last_error = f"nate-oha exited with code {retcode}"
 
             self._process_handles.pop(agent_id, None)
 
@@ -1017,7 +1017,7 @@ class NateOhaAcpClient(BaseAcpClient):
                 retcode = proc.wait(timeout=timeout)
         except OSError as exc:  # pragma: no cover - defensive
             record.status = "failed"
-            record.last_error = f"Failed to stop nate_OHA process: {exc}"
+            record.last_error = f"Failed to stop nate-oha process: {exc}"
             self._emit_event(
                 self._make_process_event(
                     agent_id=agent_id,
@@ -1028,13 +1028,13 @@ class NateOhaAcpClient(BaseAcpClient):
             self._close_event_subscribers(agent_id)
             self._cleanup_temp_config(agent_id)
             raise AcpClientError(
-                f"Failed to stop nate_OHA process for agent {agent_id!r}: {exc}"
+                f"Failed to stop nate-oha process for agent {agent_id!r}: {exc}"
             ) from exc
 
         record.last_exit_code = retcode
         record.status = "terminated" if retcode == 0 else "failed"
         if retcode != 0 and not record.last_error:
-            record.last_error = f"nate_OHA exited with code {retcode}"
+            record.last_error = f"nate-oha exited with code {retcode}"
 
         self._process_handles.pop(agent_id, None)
 
@@ -1052,7 +1052,7 @@ class NateOhaAcpClient(BaseAcpClient):
     def get_status(self, agent_id: str) -> AcpAgentStatus:
         """Return a lightweight status snapshot for ``agent_id``.
 
-        When no nate_OHA process has been started for ``agent_id``, the
+        When no nate-oha process has been started for ``agent_id``, the
         adapter reports an ``"idle"`` state. Otherwise the status is derived
         from the corresponding :class:`NateOhaProcessRecord`.
         """
@@ -1078,7 +1078,7 @@ class NateOhaAcpClient(BaseAcpClient):
     def _build_command(self, agent_id: str, metadata: AgentState) -> list[str]:
         """Construct the nate-oha ``acp`` command line for an agent.
 
-        This helper always launches Nate OHA from the persisted effective
+        This helper always launches nate-oha from the persisted effective
         :class:`NateOhaConfig` attached to :class:`AgentState`. The
         configuration is materialised into a temporary JSON file via
         :func:`materialize_nate_oha_config` and passed to the CLI via
@@ -1087,7 +1087,7 @@ class NateOhaAcpClient(BaseAcpClient):
         existing session.
 
         If ``metadata.nate_oha_config`` is not set, an :class:`AcpClientError`
-        is raised; callers must ensure that an effective Nate OHA
+        is raised; callers must ensure that an effective nate-oha
         configuration has been derived and persisted for each agent before
         launch.
         """
@@ -1095,11 +1095,11 @@ class NateOhaAcpClient(BaseAcpClient):
         cfg = getattr(metadata, "nate_oha_config", None)
         conversation_id = metadata.conversation_id or None
 
-        # Preferred path: launch from the persisted effective Nate OHA config.
+        # Preferred path: launch from the persisted effective nate-oha config.
         if cfg is None:
             raise AcpClientError(
                 "NateOhaAcpClient._build_command requires metadata.nate_oha_config to be set; "
-                f"no persisted Nate OHA configuration found for agent {agent_id!r}."
+                f"no persisted nate-oha configuration found for agent {agent_id!r}."
             )
 
         config_path = materialize_nate_oha_config(config=cfg)
@@ -1113,7 +1113,7 @@ class NateOhaAcpClient(BaseAcpClient):
         return argv
 
     def _build_env(self, agent_id: str, metadata: AgentState) -> Dict[str, str]:
-        """Return the environment used to launch nate_OHA.
+        """Return the environment used to launch nate-oha.
 
         The base environment is inherited from the current process with a
         small set of nate_ntm-specific variables added for correlation.
@@ -1137,9 +1137,9 @@ class NateOhaAcpClient(BaseAcpClient):
         env.setdefault("NATE_NTM_SWARM_ID", self.config.swarm_id)
         env.setdefault("NATE_NTM_AGENT_ID", agent_id)
 
-        # Default model selection for nate_OHA. The child environment must
+        # Default model selection for nate-oha. The child environment must
         # always have an explicit LLM model configured so that we do not
-        # rely on nate_OHA's internal default. Callers who need a different
+        # rely on nate-oha's internal default. Callers who need a different
         # model may override this via the parent environment before
         # constructing the runtime configuration.
         env.setdefault("LLM_MODEL", "openai/gpt-4o")
@@ -1154,7 +1154,7 @@ class NateOhaAcpClient(BaseAcpClient):
         return env
 
     def _cleanup_temp_config(self, agent_id: str) -> None:
-        """Best-effort removal of any materialized Nate OHA config.
+        """Best-effort removal of any materialized nate-oha config.
 
         Temporary configuration directories are created when launching agents
         from a persisted :class:`NateOhaConfig` (see
@@ -1201,16 +1201,16 @@ class NateOhaAcpClient(BaseAcpClient):
     # ------------------------------------------------------------------
 
     def _check_version(self) -> None:
-        """Verify that the installed ``nate_OHA`` meets minimum requirements.
+        """Verify that the installed ``nate-oha`` meets minimum requirements.
 
         This helper runs a lightweight self-check command (by default
-        ``nate_OHA --help``) and parses its output to ensure that a
-        supported version of nate_OHA is installed. If the check fails or an
+        ``nate-oha --help``) and parses its output to ensure that a
+        supported version of nate-oha is installed. If the check fails or an
         incompatible version is detected, :class:`AcpClientError` is raised
         with a clear diagnostic.
 
         The use of ``--help`` rather than a dedicated ``--version`` flag
-        matches the current nate_OHA CLI, which prints its version in a
+        matches the current nate-oha CLI, which prints its version in a
         banner line (for example ``OpenHands SDK v1.28.1``) and exits
         successfully.
         """
@@ -1229,7 +1229,7 @@ class NateOhaAcpClient(BaseAcpClient):
             )
         except OSError as exc:  # pragma: no cover - defensive
             raise AcpClientError(
-                f"nate_OHA executable {self.executable!r} not found or not executable"
+                f"nate-oha executable {self.executable!r} not found or not executable"
             ) from exc
 
         if proc.returncode != 0:
@@ -1237,13 +1237,13 @@ class NateOhaAcpClient(BaseAcpClient):
             if not message:
                 message = f"exit code {proc.returncode}"
             raise AcpClientError(
-                f"nate_OHA version check failed (command: {' '.join(cmd)}): {message}"
+                f"nate-oha version check failed (command: {' '.join(cmd)}): {message}"
             )
 
         output = (proc.stdout or proc.stderr or "").strip()
         if not output:
             raise AcpClientError(
-                f"nate_OHA version check produced no output (command: {' '.join(cmd)})"
+                f"nate-oha version check produced no output (command: {' '.join(cmd)})"
             )
 
         version_tuple = self._parse_semver(output)
@@ -1253,7 +1253,7 @@ class NateOhaAcpClient(BaseAcpClient):
         min_version_str = os.environ.get("NATE_OHA_MIN_VERSION", "").strip()
 
         if version_tuple is None:
-            # If nate_OHA does not report a semantic version but exits
+            # If nate-oha does not report a semantic version but exits
             # successfully, treat the version as "unknown" unless a minimum
             # version has been explicitly configured. This allows environments
             # that suppress the banner (for example via
@@ -1262,7 +1262,7 @@ class NateOhaAcpClient(BaseAcpClient):
             # ``NATE_OHA_MIN_VERSION`` is set.
             if min_version_str:
                 raise AcpClientError(
-                    "nate_OHA version check did not report a semantic version "
+                    "nate-oha version check did not report a semantic version "
                     f"and NATE_OHA_MIN_VERSION={min_version_str!r} is set; cannot "
                     f"verify compatibility (output was: {output!r})."
                 )
@@ -1282,7 +1282,7 @@ class NateOhaAcpClient(BaseAcpClient):
             if self._compare_versions(version_tuple, min_tuple) < 0:
                 current_str = ".".join(str(p) for p in version_tuple)
                 raise AcpClientError(
-                    "Installed nate_OHA version "
+                    "Installed nate-oha version "
                     f"{current_str} is below the minimum required version {min_version_str}."
                 )
 

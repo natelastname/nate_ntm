@@ -42,10 +42,10 @@ def test_load_runtime_config_basic_defaults(tmp_path: Path) -> None:
 
 
 def test_load_runtime_config_nate_oha_and_llm_defaults(tmp_path: Path) -> None:
-    """New Nate OHA and LLM-related fields have sensible defaults.
+    """New nate-oha and LLM-related fields have sensible defaults.
 
     This exercises the additional configuration surface introduced for the
-    Nate OHA ACP integration (Epic 005) without requiring any environment
+    nate-oha ACP integration (Epic 005) without requiring any environment
     variables or explicit arguments.
     """
 
@@ -54,7 +54,7 @@ def test_load_runtime_config_nate_oha_and_llm_defaults(tmp_path: Path) -> None:
 
     config = load_runtime_config(project_path=project_dir)
 
-    # Nate OHA-related defaults
+    # nate-oha-related defaults
     assert config.nate_oha_executable == "nate-oha"
     assert config.nate_oha_config_path is None
     assert config.nate_oha_runtime_mode is None
@@ -186,7 +186,7 @@ def test_load_runtime_config_metadata_dir_validation(tmp_path: Path) -> None:
 
 
 def test_load_runtime_config_nate_oha_fields_from_env(tmp_path: Path) -> None:
-    """Nate OHA and LLM fields can be driven entirely from the environment."""
+    """nate-oha and LLM fields can be driven entirely from the environment."""
 
     project_dir = tmp_path / "project_nate_oha_env"
     project_dir.mkdir()

@@ -1,7 +1,7 @@
 """Unit tests for the Agent Mail MCP-backed client.
 
 This module focuses on the production :class:`McpAgentMailClient` behavior
-that we still rely on in the Nate OHA / ACP-centric design. Tests that
+that we still rely on in the nate-oha / ACP-centric design. Tests that
 exercise the in-memory ``FakeAgentMailClient`` (including deterministic
 project IDs, identities, and unread-mail flags) have been removed as part
 of the migration away from fake adapters.
@@ -42,7 +42,8 @@ def test_mcp_agent_mail_client_ensure_project_uses_configured_project_key(tmp_pa
     absolute project path). The client must return that same key from
     :meth:`ensure_project` so that it can be stored in
     ``SwarmMetadata.agent_mail_project_id`` and propagated into
-    ``AGENT_MAIL_PROJECT`` for nate_OHA launches.
+    ``AGENT_MAIL_PROJECT`` for nate-oha launches.
+
     """
 
     # These tests require a running Agent Mail MCP server.
