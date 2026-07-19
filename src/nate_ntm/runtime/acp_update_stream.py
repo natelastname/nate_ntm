@@ -83,9 +83,14 @@ class AcpSessionUpdateStream:
     queue overflows, that subscriber is terminated with
     :class:`SubscriberOverflowError` rather than silently dropping ACP
     updates.
+
+    The retained-history size (``max_events``) and the per-subscriber
+    live-queue capacity (``subscriber_queue_size``) are configurable
+    independently, although the defaults keep them aligned.
     """
 
     max_events: int = 200
+    subscriber_queue_size: int | None = None
 
     _events: Deque[ReceivedSessionUpdate] = field(default_factory=deque, init=False, repr=False)
     _next_sequence: int = field(default=1, init=False, repr=False)
@@ -174,7 +179,17 @@ class AcpSessionUpdateStream:
         if self._closed:
             live_queue: asyncio.Queue[object] | None = None
         else:
-            maxsize = self.max_events if self.max_events > 0 else 1
+            # Determine the per-subscriber queue capacity. When an explicit
+            # ``subscriber_queue_size`` is provided and is positive, it is used
+            # directly. Otherwise, fall back to ``max_events`` and ensure a
+            # minimum capacity of 1 so queues are always bounded.
+            if self.subscriber_queue_size is not None and self.subscriber_queue_size > 0:
+                maxsize = self.subscriber_queue_size
+            elif self.max_events > 0:
+                maxsize = self.max_events
+            else:
+                maxsize = 1
+
             live_queue = asyncio.Queue[object](maxsize=maxsize)
             self._subscribers.add(live_queue)
 
@@ -238,14 +253,25 @@ class AcpSessionUpdateStream:
                         if self._closed and live_queue.empty():
                             break
             finally:
+                # Iterator-local cleanup is handled via ``aclose`` in the
+                # surrounding context manager; no additional logic is required
+                # here beyond normal loop termination.
+                pass
+
+        iterator = _iterator()
+        try:
+            yield iterator
+        finally:
+            # Ensure the subscriber is deterministically removed when the
+            # subscription context exits, even if the iterator is never
+            # consumed or exhausted.
+            if live_queue is not None:
                 self._subscribers.discard(live_queue)
 
-        try:
-            yield _iterator()
-        finally:
-            # No additional cleanup beyond removing the subscriber in the
-            # iterator's finally block.
-            pass
+            # Proactively close the async generator so that any internal
+            # cleanup (e.g. cancellation of pending tasks) runs promptly.
+            with suppress(Exception):
+                await iterator.aclose()
 
     def close(self, error: BaseException | None = None) -> None:
         """Mark the stream as closed.

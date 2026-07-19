@@ -151,6 +151,8 @@ async def test_live_subscriber_drains_queued_events_before_terminating_on_close(
         assert first is ev0
         assert second is ev1
 
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.wait_for(anext(updates), timeout=0.1)
 
 
 @pytest.mark.asyncio
@@ -174,3 +176,19 @@ async def test_subscriber_overflow_raises_error_for_slow_consumer() -> None:
 
         with pytest.raises(SubscriberOverflowError):
             await asyncio.wait_for(anext(updates), timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_subscribe_context_cleans_up_subscriber_even_if_iterator_unused() -> None:
+    stream = AcpSessionUpdateStream(max_events=10)
+
+    # No subscribers initially.
+    assert len(stream._subscribers) == 0
+
+    async with stream.subscribe() as updates:  # noqa: F841
+        # Subscriber is registered for the duration of the context.
+        assert len(stream._subscribers) == 1
+
+    # After context exit, the subscriber queue is removed even though the
+    # iterator was never consumed.
+    assert len(stream._subscribers) == 0

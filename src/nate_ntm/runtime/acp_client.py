@@ -32,6 +32,7 @@ from .acp_connection import open_nate_oha_acp_client
 from .acp_protocol_client import NATE_NTM_CLIENT_CAPABILITIES
 from .acp_types import SessionUpdate
 from .acp_update_stream import AcpSessionUpdateStream, AgentSessionNotActive, ReceivedSessionUpdate, StreamClosedError
+from .acp_event_translation import translate_acp_update
 from .events import AgentEvent, AgentEventSource
 from .metadata_store import MetadataStore
 from .nate_oha_launch import materialize_nate_oha_config
@@ -376,6 +377,12 @@ class NateOhaAcpClient(BaseAcpClient):
         :class:`NateNtmAcpProtocolClient` and is responsible for forwarding
         each typed :class:`SessionUpdate` into the owning
         :class:`AcpAgentSession`'s :class:`AcpSessionUpdateStream`.
+
+        For the duration of the AgentEvent→ACP migration, it also acts as
+        the bridge back into the legacy :class:`AgentEvent` telemetry
+        pipeline by translating each published update via
+        :func:`translate_acp_update` and emitting the resulting event
+        through :meth:`_emit_event`.
         """
 
         session = self._sessions.get(agent_id)
@@ -408,7 +415,7 @@ class NateOhaAcpClient(BaseAcpClient):
             return
 
         try:
-            session.update_stream.publish(update, received_at=received_at)
+            receipt = session.update_stream.publish(update, received_at=received_at)
         except StreamClosedError:
             # The stream has already been closed, typically because the
             # session is shutting down. Treat this as benign but log at
@@ -417,6 +424,7 @@ class NateOhaAcpClient(BaseAcpClient):
                 "acp_update_after_stream_closed",
                 extra={"agent_id": agent_id, "session_id": session_id},
             )
+            return
         except Exception as exc:  # pragma: no cover - defensive
             # Any unexpected failure when publishing to the stream is treated
             # as terminal for that stream so that subscribers observe a
@@ -427,6 +435,17 @@ class NateOhaAcpClient(BaseAcpClient):
                 extra={"agent_id": agent_id, "session_id": session_id},
             )
             raise
+
+        # Translate the typed update into an AgentEvent and forward it into
+        # the legacy per-agent event streams via the adapter's emission hook.
+        event = translate_acp_update(
+            agent_id=agent_id,
+            session_id=session_id,
+            update=receipt.update,
+            sequence=receipt.sequence,
+            timestamp=receipt.received_at,
+        )
+        self._emit_event(event)
 
 
     def _emit_event(self, event: AgentEvent) -> None:

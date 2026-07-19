@@ -10,6 +10,7 @@ from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
 from nate_ntm.runtime.acp_client import AcpAgentSession, AcpClientError, NateOhaAcpClient
 from nate_ntm.runtime.acp_types import SessionUpdate
 from nate_ntm.runtime.acp_update_stream import AgentSessionNotActive, StreamClosedError
+from nate_ntm.runtime.events import AgentEventSource
 
 
 def _make_config(tmp_path: Path) -> RuntimeConfig:
@@ -186,6 +187,79 @@ async def test_on_session_update_preserves_typed_update_and_timestamp(tmp_path: 
     assert received.sequence == 1
     assert received.update is update
     assert received.received_at == received_at
+
+
+
+@pytest.mark.asyncio
+async def test_on_session_update_emits_agent_event_via_legacy_pipeline(tmp_path: Path) -> None:
+    """_on_session_update bridges typed updates into AgentEvent callbacks.
+
+    For the duration of the migration, each published :class:`SessionUpdate`
+    must be translated into an :class:`AgentEvent` using
+    :func:`translate_acp_update` and emitted via the adapter's ``on_event``
+    hook so that existing consumers of the legacy telemetry surface continue
+    to observe ACP activity.
+    """
+
+    config = _make_config(tmp_path)
+    client = NateOhaAcpClient(config=config)
+
+    agent_id = "agent-update-event-1"
+    session_id = "conv-event-1"
+
+    # Create a synthetic live session whose typed update stream will receive
+    # the ACP-derived update.
+    session = AcpAgentSession(
+        agent_id=agent_id,
+        conversation_id=session_id,
+        process=object(),
+        connection=object(),
+        protocol_client=object(),
+        status="running",
+        stderr_task=None,
+        exit_monitor_task=None,
+    )
+    client._sessions[agent_id] = session
+
+    # Capture legacy AgentEvent instances delivered through the adapter's
+    # emission hook.
+    events: list = []
+    client.on_event = events.append
+
+    update = _DummyUpdate()
+    received_at = datetime(2024, 1, 1, 12, 0, 0)
+
+    # Simulate the ACP SDK invoking the protocol client's callback.
+    client._on_session_update(
+        agent_id=agent_id,
+        session_id=session_id,
+        update=update,
+        received_at=received_at,
+    )
+
+    # The typed update stream should contain exactly one ReceivedSessionUpdate
+    # reflecting the original update object and timestamp.
+    assert len(session.update_stream._events) == 1
+    receipt = next(iter(session.update_stream._events))
+    assert receipt.update is update
+    assert receipt.received_at == received_at
+
+    # The legacy callback must have observed a single AgentEvent derived from
+    # this receipt.
+    assert len(events) == 1
+    event = events[0]
+
+    assert event.agent_id == agent_id
+    assert event.source is AgentEventSource.ACP
+    assert event.timestamp == received_at
+    assert event.payload["session_id"] == session_id
+
+    # The event identifier encodes the per-session sequence number assigned by
+    # the typed update stream.
+    parts = event.event_id.split(":")
+    assert parts[0] == agent_id
+    assert parts[1] == session_id
+    assert int(parts[2]) == receipt.sequence
 
 
 
