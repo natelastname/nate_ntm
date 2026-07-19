@@ -13,7 +13,6 @@ Concrete implementation in this branch:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import re
@@ -44,59 +43,10 @@ __all__ = [
     "AcpAgentSession",
     "BaseAcpClient",
     "NateOhaAcpClient",
-    "next_matching_event",
 ]
 
 
 logger = logging.getLogger(__name__)
-
-# Maximum number of pending events buffered per subscriber. When this limit is
-# exceeded we prefer dropping the oldest event and logging a warning so that
-# newer events continue to flow.
-_EVENT_QUEUE_MAXSIZE = 200
-
-# Sentinel object used to signal that an event stream has been closed. This is
-# enqueued into each subscriber queue when an agent stops or fails so that
-# iterators can terminate promptly.
-_EVENT_STREAM_CLOSED: object = object()
-
-
-async def next_matching_event(
-    events: AsyncIterator[AgentEvent],
-    predicate: Callable[[AgentEvent], bool],
-    *,
-    timeout: float | None = None,
-    sink: list[AgentEvent] | None = None,
-) -> AgentEvent:
-    """Consume events from an existing subscription until ``predicate`` matches.
-
-    This helper operates on an already-established event iterator, avoiding the
-    "late subscription" race that :meth:`NateOhaAcpClient.wait_for_event`
-    necessarily has when it creates a fresh subscription internally.
-
-    When ``sink`` is provided, every observed event is appended to it before
-    the predicate is applied.
-
-    Raises
-    ------
-    RuntimeError
-        If the event stream is exhausted before ``predicate`` matches.
-    """
-
-    async def _runner() -> AgentEvent:
-        async for event in events:
-            if sink is not None:
-                sink.append(event)
-            if predicate(event):
-                return event
-
-        raise RuntimeError("event stream closed before predicate matched")
-
-    if timeout is None:
-        return await _runner()
-
-    return await asyncio.wait_for(_runner(), timeout=timeout)
-
 
 class AcpClientError(RuntimeError):
     """Base error type for ACP adapter failures."""
@@ -407,77 +357,11 @@ class NateOhaAcpClient(BaseAcpClient):
     _temp_config_dirs: Dict[str, str] = field(default_factory=dict, init=False)
 
 
-    # Per-agent subscribers for async event streaming. Each entry is a set of
-    # queues, one per active subscription created by :meth:`subscribe_events`.
-    _event_subscribers: Dict[str, Set[asyncio.Queue[Any]]] = field(
-        default_factory=dict,
-        init=False,
-    )
-
     # Cached result of the version/compatibility check (FR-013).
 
     # ------------------------------------------------------------------
     # Event emission and async streaming helpers
     # ------------------------------------------------------------------
-
-    def _register_event_subscriber(self, agent_id: str) -> asyncio.Queue[Any]:
-        """Register a new per-agent event subscriber queue.
-
-        The returned queue is bounded by :data:`_EVENT_QUEUE_MAXSIZE` to prevent
-        unbounded memory growth under slow consumers. Older events are dropped
-        on overflow in favour of newer ones.
-        """
-
-        queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=_EVENT_QUEUE_MAXSIZE)
-        subscribers = self._event_subscribers.setdefault(agent_id, set())
-        subscribers.add(queue)
-        return queue
-
-    def _unregister_event_subscriber(self, agent_id: str, queue: asyncio.Queue[Any]) -> None:
-        """Remove ``queue`` from the subscriber set for ``agent_id``."""
-
-        subscribers = self._event_subscribers.get(agent_id)
-        if not subscribers:
-            return
-
-        subscribers.discard(queue)
-        if not subscribers:
-            self._event_subscribers.pop(agent_id, None)
-
-    def _close_event_subscribers(self, agent_id: str) -> None:
-        """Signal end-of-stream to all subscribers for ``agent_id``.
-
-        This enqueues :data:`_EVENT_STREAM_CLOSED` into each subscriber queue
-        so that any pending iterators can terminate promptly. It is idempotent
-        and safe to call multiple times.
-        """
-
-        subscribers = self._event_subscribers.pop(agent_id, None)
-        if not subscribers:
-            return
-
-        for queue in list(subscribers):
-            try:
-                queue.put_nowait(_EVENT_STREAM_CLOSED)
-            except asyncio.QueueFull:
-                # Ensure the close sentinel is delivered even when the queue is
-                # full by dropping the oldest queued item. This mirrors the
-                # drop-oldest policy used for regular event emission.
-                try:
-                    _dropped = queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    _dropped = None
-                try:
-                    queue.put_nowait(_EVENT_STREAM_CLOSED)
-                except asyncio.QueueFull:
-                    logger.warning(
-                        "acp_event_stream_close_overflow",
-                        extra={
-                            "agent_id": agent_id,
-                            "queue_size": queue.qsize(),
-                            "queue_maxsize": queue.maxsize,
-                        },
-                    )
 
     def _on_session_update(
         self,
@@ -506,6 +390,23 @@ class NateOhaAcpClient(BaseAcpClient):
                 f"Received ACP session update for inactive agent {agent_id!r}"
             )
 
+        # When the session already has a bound conversation identifier,
+        # reject updates that refer to a different ACP session. This avoids
+        # accidentally publishing stale callbacks from a replaced session
+        # into the active stream. During the brief window before a new
+        # session ID is recorded we accept all updates for the agent.
+        bound_session_id = (session.conversation_id or "").strip()
+        if bound_session_id and bound_session_id != session_id:
+            logger.warning(
+                "acp_session_update_for_stale_session",
+                extra={
+                    "agent_id": agent_id,
+                    "expected_session_id": bound_session_id,
+                    "actual_session_id": session_id,
+                },
+            )
+            return
+
         try:
             session.update_stream.publish(update, received_at=received_at)
         except StreamClosedError:
@@ -529,149 +430,15 @@ class NateOhaAcpClient(BaseAcpClient):
 
 
     def _emit_event(self, event: AgentEvent) -> None:
-        """Deliver an AgentEvent to subscribers and the legacy callback.
+        """Deliver an AgentEvent to the runtime callback, if configured.
 
-        This is the single emission path used for both ACP session updates
-        (via :func:`open_nate_oha_acp_client`) and local process-lifecycle
-        events emitted by this adapter.
+        This hook is used for process-lifecycle notifications and any
+        adapter-level telemetry that still flows through the generic
+        :class:`AgentEvent` pipeline.
         """
 
-        # Broadcast to per-agent subscriber queues.
-        subscribers = self._event_subscribers.get(event.agent_id)
-        if subscribers:
-            for queue in list(subscribers):
-                try:
-                    queue.put_nowait(event)
-                except asyncio.QueueFull:
-                    # Drop the oldest event to make room for the newest one and
-                    # log the overflow so operators can detect slow consumers.
-                    try:
-                        _dropped = queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        _dropped = None
-
-                    logger.warning(
-                        "acp_event_queue_overflow_drop_oldest",
-                        extra={
-                            "agent_id": event.agent_id,
-                            "event_type": event.type,
-                            "queue_size": queue.qsize(),
-                            "queue_maxsize": queue.maxsize,
-                        },
-                    )
-
-                    try:
-                        queue.put_nowait(event)
-                    except asyncio.QueueFull:
-                        logger.error(
-                            "acp_event_queue_overflow_unresolved",
-                            extra={
-                                "agent_id": event.agent_id,
-                                "event_type": event.type,
-                                "queue_size": queue.qsize(),
-                                "queue_maxsize": queue.maxsize,
-                            },
-                        )
-
-        # Preserve the existing on_event callback semantics.
         if self.on_event is not None:
             self.on_event(event)
-
-    @asynccontextmanager
-    async def subscribe_events(self, agent_id: str) -> AsyncIterator[AsyncIterator[AgentEvent]]:
-        """Subscribe to the event stream for ``agent_id``.
-
-        Entering the context registers a new subscriber before returning
-        control to the caller, ensuring that no early events are missed
-        between subscription and subsequent operations (for example, a
-        prompt or agent start).
-        """
-
-        queue = self._register_event_subscriber(agent_id)
-
-        async def _iterator() -> AsyncIterator[AgentEvent]:
-            try:
-                while True:
-                    item = await queue.get()
-                    if item is _EVENT_STREAM_CLOSED:
-                        break
-
-                    event = item  # type: ignore[assignment]
-                    yield event
-            finally:
-                # Ensure the queue is removed even if the iterator is closed
-                # independently of the context manager.
-                self._unregister_event_subscriber(agent_id, queue)
-
-        try:
-            yield _iterator()
-        finally:
-            # Request stream closure for this subscriber if it is still
-            # registered. This will cause any pending iterator to terminate.
-            self._unregister_event_subscriber(agent_id, queue)
-            try:
-                queue.put_nowait(_EVENT_STREAM_CLOSED)
-            except asyncio.QueueFull:
-                # Ensure the close sentinel is delivered even when the queue is
-                # full by dropping the oldest queued item. This mirrors the
-                # drop-oldest policy used for regular event emission.
-                try:
-                    _dropped = queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    _dropped = None
-                try:
-                    queue.put_nowait(_EVENT_STREAM_CLOSED)
-                except asyncio.QueueFull:
-                    logger.warning(
-                        "acp_event_subscription_close_overflow",
-                        extra={
-                            "agent_id": agent_id,
-                            "queue_size": queue.qsize(),
-                            "queue_maxsize": queue.maxsize,
-                        },
-                    )
-
-    async def iter_events(self, agent_id: str) -> AsyncIterator[AgentEvent]:
-        """Yield AgentEvent objects for ``agent_id`` as they arrive.
-
-        This is a thin convenience wrapper around :meth:`subscribe_events`.
-        Each call registers an independent subscription that receives a copy
-        of every subsequent event for the given agent.
-        """
-
-        async with self.subscribe_events(agent_id) as events:
-            async for event in events:
-                yield event
-
-    async def wait_for_event(
-        self,
-        agent_id: str,
-        predicate: Callable[[AgentEvent], bool],
-        *,
-        timeout: float | None = None,
-    ) -> AgentEvent:
-        """Wait for the first event for ``agent_id`` matching ``predicate``.
-
-        This helper creates a *new* subscription internally, which means it
-        may miss events that were emitted before it was called. For precise
-        ordering semantics prefer :meth:`subscribe_events` together with
-        :func:`next_matching_event`.
-        """
-
-        async def _runner() -> AgentEvent:
-            async with self.subscribe_events(agent_id) as events:
-                async for event in events:
-                    if predicate(event):
-                        return event
-
-            raise RuntimeError("event stream closed before predicate matched")
-
-        if timeout is None:
-            return await _runner()
-
-        return await asyncio.wait_for(_runner(), timeout=timeout)
-
-
 
     @asynccontextmanager
     async def subscribe_acp_updates(self, agent_id: str) -> AsyncIterator[AsyncIterator[ReceivedSessionUpdate]]:
@@ -1001,11 +768,8 @@ class NateOhaAcpClient(BaseAcpClient):
                     extra={"agent_id": agent_id},
                 )
 
-            # Regardless of whether shutdown succeeds or fails, terminate any
-            # active event subscriptions for this agent so callers do not wait
-            # indefinitely on a closed session, and clean up any temporary
-            # nate-oha configuration created for the agent.
-            self._close_event_subscribers(agent_id)
+            # Regardless of whether shutdown succeeds or fails, clean up any
+            # temporary nate-oha configuration created for the agent.
             self._cleanup_temp_config(agent_id)
 
         # Mark the in-memory session as terminated so any future status
@@ -1091,10 +855,7 @@ class NateOhaAcpClient(BaseAcpClient):
             else:
                 record.status = "terminated"
 
-            # Terminate any active event subscriptions for this agent so that
-            # callers do not wait indefinitely on a non-existent process, and
-            # clean up any temporary nate-oha configuration for the agent.
-            self._close_event_subscribers(agent_id)
+            # Clean up any temporary nate-oha configuration for the agent.
             self._cleanup_temp_config(agent_id)
             return
 
@@ -1118,7 +879,6 @@ class NateOhaAcpClient(BaseAcpClient):
                     payload={"exit_code": retcode},
                 )
             )
-            self._close_event_subscribers(agent_id)
             self._cleanup_temp_config(agent_id)
             return
 
@@ -1140,7 +900,6 @@ class NateOhaAcpClient(BaseAcpClient):
                     payload={"error": str(exc)},
                 )
             )
-            self._close_event_subscribers(agent_id)
             self._cleanup_temp_config(agent_id)
             raise AcpClientError(
                 f"Failed to stop nate-oha process for agent {agent_id!r}: {exc}"
@@ -1161,7 +920,6 @@ class NateOhaAcpClient(BaseAcpClient):
                 payload={"exit_code": retcode},
             )
         )
-        self._close_event_subscribers(agent_id)
         self._cleanup_temp_config(agent_id)
 
     def get_status(self, agent_id: str) -> AcpAgentStatus:
