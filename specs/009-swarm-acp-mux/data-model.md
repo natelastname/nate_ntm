@@ -29,42 +29,46 @@ Notes:
 - ACP-specific models (e.g., `SessionUpdate`) are **not** stored directly in `AgentEvent`.
 - The ACP integration code is responsible for converting between ACP SDK types and this normalized representation.
 
-### 1.2 AgentEventStream
+### 1.2 ACP Update Stream (transport-level)
 
-Each agent has a single `AgentEventStream` instance that owns both retained history and live subscriber queues.
+Each agent exposes an **ACP update stream** that carries exact protocol updates (e.g., `SessionUpdate` objects) for that agent. This stream is owned by the ACP client layer (e.g., `NateOhaAcpClient`).
 
 Conceptual structure:
 
 ```python
-class AgentEventStream:
-    def publish(self, event: AgentEvent) -> None: ...
+class AcpUpdateStream:
+    def publish(self, update: SessionUpdate) -> None: ...
 
     @asynccontextmanager
-    async def subscribe(self) -> AsyncIterator[AsyncIterator[AgentEvent]]:
-        """Yield retained history, then live events, then a closure sentinel."""
+    async def subscribe(self) -> AsyncIterator[AsyncIterator[SessionUpdate]]:
+        """Yield retained history of updates, then live updates, then a closure sentinel."""
         ...
 ```
 
 Implementation properties:
 
 - **Retained history**
-  - A bounded deque of recent `AgentEvent`s per agent, ordered oldest→newest.
-  - When full, oldest events are dropped.
+  - A bounded deque of recent `SessionUpdate` objects per agent, ordered oldest→newest.
+  - When full, oldest updates are dropped.
 
 - **Per-subscriber queues**
   - Each subscriber gets its own bounded queue.
-  - If a subscriber is too slow, the queue drops oldest events to make room for new ones (drop-oldest policy).
-  - This preserves current `NateOhaAcpClient` semantics for live subscribers.
+  - If a subscriber is too slow, the queue drops oldest updates to make room for new ones (drop-oldest policy).
+  - This matches the existing `NateOhaAcpClient` semantics for live subscribers.
 
 - **Replay-then-live semantics**
   - On subscription:
-    - capture a replay boundary and enqueue retained events up to that boundary;
-    - then deliver live events through the same queue;
+    - capture a replay boundary and enqueue retained updates up to that boundary;
+    - then deliver live updates through the same queue;
     - finally yield a closure sentinel when the stream ends.
 
 - **Durability**
   - Streams are in-memory only; they are rebuilt empty on runtime restart.
-  - Retained history is best-effort context, not a persistence mechanism.
+  - Retained history is best-effort context for ACP clients (including SwarmACPMux), not a persistence mechanism.
+
+`SwarmACPMux` subscribes to this ACP update stream for the currently attached agent and forwards the resulting `SessionUpdate` objects to the external ACP connection. It does **not** reconstruct protocol messages from `AgentEvent` telemetry.
+
+The separate `AgentEvent` history used by the runtime control API and dashboards remains as defined in spec 001 and is not reused as a transport bus here.
 
 ### 1.3 SwarmACPMux
 
@@ -98,7 +102,7 @@ Fields:
 - `attached_agent_id: str | None`
   - Currently attached agent ID, if any.
 - `_forwarding_task: asyncio.Task | None`
-  - Background task consuming a subscription to the attached agent’s events and forwarding them to the external connection.
+  - Background task consuming a subscription to the attached agentŌĆÖs events and forwarding them to the external connection.
 - `_closed: bool`
   - Marks the mux as closed; further operations raise `SwarmACPMuxClosedError`.
 
@@ -113,10 +117,10 @@ The mux depends on two protocols, defined in the spec:
 
 ```python
 class SwarmAgentClient(Protocol):
-    def subscribe_events(
+    def subscribe_acp_updates(
         self,
         agent_id: str,
-    ) -> AbstractAsyncContextManager[AsyncIterator[AgentEvent]]: ...
+    ) -> AbstractAsyncContextManager[AsyncIterator[SessionUpdate]]: ...
 
     async def prompt(self, agent_id: str, prompt: str) -> str | None: ...
 
@@ -219,12 +223,12 @@ For a single `SwarmACPMux` instance:
      - Set `attached_agent_id = agent_id`.
      - Start `_forwarding_task = asyncio.create_task(_forward_agent_events(agent_id), ...)`.
 
-3. **Forwarding loop (`_forward_agent_events`)**
+3. **Forwarding loop (`_forward_agent_updates`)**
 
-   - Use `agent_client.subscribe_events(agent_id)` to obtain an async iterator of `AgentEvent`.
-   - For each event, call `_forward_external_event(event)`:
-     - Convert normalized `AgentEvent` into an ACP-level update via helper(s) in the ACP adapter/integration layer.
-     - Send via `external_connection.session_update(session_id=external_session_id, update=...)`.
+   - Use `agent_client.subscribe_acp_updates(agent_id)` to obtain an async iterator of `SessionUpdate`.
+   - For each update, call `_forward_external_update(update)`:
+     - Optionally apply adapter-specific translation, but do not round-trip through `AgentEvent`.
+     - Send via `external_connection.session_update(session_id=external_session_id, update=update)` (or a transformed equivalent).
    - On normal completion:
      - If this task is still the current `_forwarding_task` for `attached_agent_id`, clear `attached_agent_id` and `_forwarding_task`.
 
@@ -243,24 +247,26 @@ For a single `SwarmACPMux` instance:
    - `await detach()`.
    - Subsequent operations that require an open mux raise `SwarmACPMuxClosedError`.
 
-### 3.2 EventStream Retention and Replay
+### 3.2 ACP Update Stream Retention and Replay
 
-For each `AgentEventStream`:
+For each per-agent `AcpUpdateStream`:
 
-- **Publish**: `publish(event)` appends to the retained deque (dropping oldest if full) and enqueues to each subscriber’s bounded queue (dropping oldest per subscriber as needed).
+- **Publish**: `publish(update)` appends to the retained deque of `SessionUpdate` objects (dropping oldest if full) and enqueues to each subscriber's bounded queue (dropping oldest per subscriber as needed).
 - **Subscribe**:
   - A subscriber calls `subscribe()` and receives an async iterator.
   - The iterator yields:
-    1. retained events up to a capture boundary;
-    2. then all future events until stream closure;
+    1. retained updates up to a capture boundary;
+    2. then all future updates until stream closure;
     3. then a closure sentinel and terminates.
 
-On runtime restart, all in-memory streams and muxes are discarded; external clients are expected to reconnect and reattach as needed.
+On runtime restart, all in-memory ACP update streams and muxes are discarded; external clients are expected to reconnect and reattach as needed. The runtime's separate `AgentEvent` history for observability is rebuilt as agents resume and produce new events.
 
 ## 4. Relationships Summary
 
 - One `RuntimeDaemon` instance manages one swarm.
-- Each swarm has many agents; each agent has one `AgentEventStream`.
-- Each `AgentEventStream` may have many subscribers (dashboards, logs, SwarmACPMux instances, etc.).
+- Each swarm has many agents; each agent has:
+  - one ACP update stream (`AcpUpdateStream`) for exact `SessionUpdate` transport; and
+  - an `AgentEvent` history used for runtime observability (as in spec 001).
+- Each ACP update stream may have many subscribers (including SwarmACPMux instances and other ACP-aware consumers).
 - Each `SwarmACPMux` is associated with exactly one external ACP session and, at any given time, at most one attached agent.
-- Swarm and agent views used by the mux (`get_swarm_status`, `get_agent_detail`) reuse the contracts defined in spec 001.
+- Swarm and agent views used by the mux (`get_swarm_status`, `get_agent_detail`) reuse the contracts defined in spec 001 and read from `AgentEvent` history, not from ACP transport streams.

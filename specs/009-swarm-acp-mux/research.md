@@ -30,35 +30,43 @@ both of which conflict with existing boundaries in the codebase.
 - Keeps swarm metadata and event history in `RuntimeDaemon` / `SwarmState`, matching spec 001.
 - Avoids creating a second "mini-runtime"; the mux is a narrow coordination layer.
 
-## 2. Replay-Capable Agent Event Streams
+## 2. Parallel ACP Update and Agent Event Streams
 
-**Decision**: Consolidate retained history and live subscriber delivery into a single `AgentEventStream` abstraction per agent, while preserving the existing semantics from `NateOhaAcpClient`.
+**Decision**: Keep two distinct streams per agent:
 
-A correct `AgentEventStream` provides:
+1. An **ACP update stream** carrying exact protocol objects (e.g., `SessionUpdate`) used for ACP transport and mux forwarding.
+2. A **runtime event history** (`AgentEvent` records) used for status APIs, diagnostics, dashboards, and logs.
 
-- one bounded **retained history deque** per agent;
-- one bounded **queue per subscriber**, with drop-oldest semantics for slow subscribers;
-- a clear **closure sentinel** when an agent stream ends; and
-- an **atomic replay-to-live transition** for each subscriber:
-  - replay retained events up to a boundary;
-  - then continue with live events on the same queue.
+These streams may be updated from the same inbound ACP callbacks, but they serve different purposes and are not collapsed into a single generic bus.
 
-The public contract for subscribers (including the mux) is:
+Conceptually:
 
 ```python
-@asynccontextmanager
-async def subscribe(self) -> AsyncIterator[AsyncIterator[AgentEvent]]:
-    ...  # replay then live, then closure
+async def session_update(..., update: SessionUpdate) -> None:
+    # Transport path: exact ACP updates (for mux and other ACP-aware consumers)
+    self._acp_update_stream.publish(update)
+
+    # Telemetry path: summarized runtime event
+    event = summarize_acp_update(update)
+    self._agent_event_history.publish(event)
 ```
 
-`NateOhaAcpClient.subscribe_events(agent_id)` becomes a thin wrapper around this stream.
+A correct ACP update stream provides:
+
+- bounded **retained history of `SessionUpdate` objects** per agent;
+- **per-subscriber queues** with drop-oldest semantics (as in the current `NateOhaAcpClient` design);
+- a single **replay-then-live** sequence for each subscriber (retained history, then live updates, then closure sentinel).
+
+`SwarmACPMux` subscribes to the ACP update stream and forwards those exact protocol objects to the external client. It does **not** reconstruct ACP messages from `AgentEvent` telemetry.
+
+`AgentEvent` history remains dedicated to the runtime’s observability surfaces (status API, dashboards, logs) and can safely lose protocol-level detail.
 
 **Rationale**:
 
-- Matches the current behavior where live subscribers see their own bounded queues with drop-oldest policy.
-- Centralizes replay and ordering in one place.
-- Makes SwarmACPMux just another subscriber, without special-case logic.
-
+- Preserves the existing, ACP-specific subscription mechanism as the transport bus for protocol updates.
+- Keeps `AgentEvent` as a derived, runtime-oriented view rather than a second transport layer.
+- Avoids introducing an extra replay layer by having the mux subscribe directly to telemetry.
+- Keeps responsibilities clear: ACP streams for protocol delivery; AgentEvent history for observability.
 ## 3. AgentEvent Representation and ACP Boundary
 
 **Decision**: Keep `AgentEvent` as a **normalized, ACP-agnostic** runtime model. Do not embed ACP SDK `SessionUpdate` objects in `AgentEvent`.

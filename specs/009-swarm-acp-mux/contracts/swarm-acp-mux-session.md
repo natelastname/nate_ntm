@@ -241,10 +241,11 @@ If either precondition is not met, the adapter returns:
 ### 3.2 Forwarding Behavior
 
 - The adapter forwards the ACP request to the per-agent ACP client session corresponding to `mux.attached_agent_id`.
-- The runtime observes ACP responses and intermediate updates, converts them into `AgentEvent` objects, and publishes them to the agent’s `AgentEventStream`.
-- SwarmACPMux receives these events via its subscription, converts them back to ACP-level updates, and writes them to the external session.
+- The ACP client session produces protocol-level updates (e.g., `SessionUpdate` objects) into the agent’s ACP update stream.
+- SwarmACPMux subscribes to that ACP update stream for the attached agent and forwards each `SessionUpdate` (or a lightly transformed equivalent) to the external ACP session.
+- In parallel, the runtime may summarize each `SessionUpdate` into an `AgentEvent` and append it to the agent’s `AgentEvent` history for observability, but that telemetry history is **not** used to drive ACP transport.
 
-Result: the client observes a **single ordered stream** of events for the attached agent, including replayed history and all subsequent live updates.
+Result: the client observes a **single ordered stream** of protocol updates for the attached agent, including replayed history and all subsequent live updates, while the runtime maintains a separate, possibly lossy telemetry history for status and diagnostics.
 
 ---
 

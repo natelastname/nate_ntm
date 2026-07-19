@@ -13,8 +13,8 @@ Implement `SwarmACPMux` as a **connection-scoped routing object** between a sing
 For each external ACP session, the mux:
 
 - owns attachment state (`attached_agent_id`);
-- manages a single forwarding task that consumes a **replay-capable per-agent event stream**;
-- forwards normalized `AgentEvent` payloads to the external ACP adapter, which converts them into ACP SDK `SessionUpdate`s for that connection;
+- manages a single forwarding task that subscribes to a **replay-capable per-agent ACP update stream** (exact `SessionUpdate` objects) provided by the ACP client layer;
+- forwards those `SessionUpdate` objects (or a lightly transformed equivalent) to the external ACP connection;
 - exposes logical **swarm-control operations** such as `_attach`, `_detach`, `_swarm_status`, and `_agent_detail`, invoked by the Swarm ACP server adapter when it detects the corresponding ACP extension requests.
 
 The mux coordinates existing runtime services instead of introducing new runtimes or lifecycle managers:
@@ -47,7 +47,8 @@ MVP goals:
 **Storage**
 
 - No new durable storage.
-- Per-agent event streams (`AgentEventStream`) are in-memory, bounded, replay-capable structures.
+- Per-agent ACP update streams (e.g., `AcpUpdateStream[SessionUpdate]`) are in-memory, bounded, replay-capable structures owned by the ACP client layer.
+- `AgentEvent` history used by the runtime control API remains separate, as defined in spec 001.
 - `.nate_ntm/` remains the single source of truth for swarm metadata, agent metadata, and resume behavior.
 
 **Testing**
