@@ -275,13 +275,13 @@ Behavior:
 3. serialize the lifecycle transition with `_lifecycle_lock`;
 4. if the same agent is already attached and its forwarding task is healthy:
    - do not create a new subscription or forwarding task; and
-   - return a `PreparedAttachment` whose token refers to the existing `_Attachment`, so that `activate_attachment()` becomes a no-op;
+   - return a `PreparedAttachment` whose token refers to the existing `_Attachment`, so that `activate_attachment()` becomes a no-op, and with `newly_prepared=False`;
 5. otherwise, completely detach any previous attachment;
 6. call `subscribe_acp_updates(agent_id)`;
 7. enter the returned async context manager;
 8. retain the concrete subscription and iterator;
 9. record the new attachment;
-10. return a handle representing the prepared attachment.
+10. return a handle representing the prepared attachment, with `newly_prepared=True`.
 
 If subscription establishment fails, the method raises and leaves the mux unattached.
 
@@ -294,9 +294,13 @@ A representative handle is:
 class PreparedAttachment:
     agent_id: str
     token: object
+    newly_prepared: bool
 ```
 
-The token prevents a stale acknowledgment from activating an attachment that has already been replaced or detached.
+- `agent_id` and `token` identify the attachment candidate.
+- `newly_prepared` records whether this call to `prepare_attach()` created a fresh `_Attachment` (`True`) or simply returned a handle to an existing healthy active attachment (`False`).
+
+The token prevents a stale acknowledgment from activating an attachment that has already been replaced or detached. The `newly_prepared` flag lets `abort_attachment(prepared)` distinguish between **rolling back a new candidate** and **leaving a pre-existing healthy attachment intact** when acknowledgment fails.
 
 ### 8.2 activate_attachment
 
@@ -330,14 +334,27 @@ try:
         agent_id=agent_id,
     )
 except BaseException:
-    # MUST discard the prepared attachment without activating it
-    await mux.abort_attachment(prepared)  # or equivalent token-aware abort
+    # MUST roll back any newly prepared attachment without tearing down
+    # a pre-existing healthy attachment that was reused idempotently
+    await mux.abort_attachment(prepared)  # or equivalent token-/flag-aware abort
     raise
 
 await mux.activate_attachment(prepared)
 ```
 
-Here `mux.abort_attachment(prepared)` represents any token-aware cleanup that discards the prepared attachment if and only if it is still current; an implementation MAY encode this into `detach()` or another internal helper. The externally visible requirement is that a failed acknowledgment leaves the mux open and unattached, with no forwarding task started for the failed attachment.
+Here `mux.abort_attachment(prepared)` represents token- and flag-aware cleanup that:
+
+- if `prepared.newly_prepared` is `True` and the corresponding `_Attachment` is still current, discards that candidate attachment and leaves the mux in the same state it would have been in if `prepare_attach()` had failed; and
+- if `prepared.newly_prepared` is `False` and the corresponding `_Attachment` is still the current healthy attachment, leaves that attachment intact.
+
+If `prepared` no longer refers to the current `_Attachment` (a stale handle), `abort_attachment(prepared)` MUST NOT detach whatever attachment is now active.
+
+An implementation MAY expose this as a dedicated API or encode it into an internal helper, but it MUST NOT unconditionally call `detach()` in the idempotent same-agent case.
+
+The externally visible requirement is that a failed acknowledgment:
+
+- never starts forwarding for the failed attachment; and
+- never tears down a previously-established healthy attachment that this `_attach` request merely re-acknowledged.
 
 This split makes acknowledgment-before-replay an implementable guarantee rather than a scheduling assumption.
 
@@ -357,8 +374,9 @@ async def attach(
     try:
         await acknowledge(agent_id)
     except BaseException:
-        # MUST discard the prepared attachment without activating it
-        await self.abort_attachment(prepared)  # or equivalent token-aware abort
+        # MUST roll back any newly prepared attachment without tearing down
+        # a pre-existing healthy attachment that was reused idempotently
+        await self.abort_attachment(prepared)  # or equivalent token-/flag-aware abort
         raise
 
     await self.activate_attachment(prepared)

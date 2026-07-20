@@ -82,7 +82,7 @@ The `test_swarm_acp_mux_real_path.py` test should perform roughly the following 
 
 6. **Attach to that agent** via `_attach`.
 
-   - The adapter should implement the three-stage attachment transaction, with a token-aware abort on acknowledgment failure:
+   - The adapter should implement the three-stage attachment transaction, with a token-/flag-aware abort on acknowledgment failure:
 
      ```python
      prepared = await mux.prepare_attach(agent_id)
@@ -90,8 +90,9 @@ The `test_swarm_acp_mux_real_path.py` test should perform roughly the following 
      try:
          await external_connection.send_attach_acknowledgment(...)
      except BaseException:
-         # MUST discard the prepared attachment without activating it
-         await mux.abort_attachment(prepared)  # or equivalent token-aware abort
+         # MUST roll back any newly prepared attachment without tearing down
+         # a pre-existing healthy attachment that was reused idempotently
+         await mux.abort_attachment(prepared)  # or equivalent token-/flag-aware abort
          raise
 
      await mux.activate_attachment(prepared)

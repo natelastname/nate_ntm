@@ -180,14 +180,18 @@ Identity of `_Attachment` objects (or their associated tokens, see below) is use
 class PreparedAttachment:
     agent_id: str
     token: object
+    newly_prepared: bool
 ```
 
 - `agent_id`
   - The agent prepared for attachment.
 - `token`
   - An opaque identity marker for the underlying `_Attachment`.
+- `newly_prepared`
+  - `True` when this call to `prepare_attach()` created a fresh `_Attachment` for the requested agent.
+  - `False` when `prepare_attach()` reused an existing healthy active attachment for the same agent (idempotent `_attach`).
 
-`activate_attachment(prepared)` verifies both that the mux is still open and that `prepared.token` matches the current `_Attachment`. This prevents stale acknowledgments from activating obsolete attachments.
+`activate_attachment(prepared)` verifies both that the mux is still open and that `prepared.token` matches the current `_Attachment`. This prevents stale acknowledgments from activating obsolete attachments. `abort_attachment(prepared)` additionally consults `newly_prepared` to decide whether acknowledgment failure should roll back a new candidate attachment or leave a pre-existing healthy attachment intact.
 
 ---
 

@@ -117,7 +117,9 @@ A convenience `attach(agent_id, acknowledge=...)` helper is allowed **only** if 
   - the `AsyncIterator[ReceivedSessionUpdate]`;
   - a `forwarding_enabled` event;
   - the forwarding `Task`.
-- `PreparedAttachment` carries a token that is checked by `activate_attachment()` to ensure it still refers to the current `_Attachment`.
+- `PreparedAttachment` carries:
+  - a token that is checked by `activate_attachment()` to ensure it still refers to the current `_Attachment`; and
+  - a `newly_prepared` flag that records whether this request created a fresh `_Attachment` or reused an existing healthy one, so that `abort_attachment(prepared)` can roll back only truly new candidates while leaving idempotent same-agent attachments intact when acknowledgment fails.
 - `_attachment_finished()` verifies identity before clearing attachment state when a forwarding task completes.
 
 **Rationale**:

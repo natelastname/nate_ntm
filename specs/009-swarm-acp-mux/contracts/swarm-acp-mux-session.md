@@ -190,14 +190,27 @@ Attach this external ACP session to a specific agent and begin streaming that ag
            agent_id=agent_id,
        )
    except BaseException:
-       # MUST discard the prepared attachment without activating it
-       await mux.abort_attachment(prepared)  # or equivalent token-aware abort
+       # MUST roll back any newly prepared attachment without tearing down
+       # a pre-existing healthy attachment that was reused idempotently
+       await mux.abort_attachment(prepared)  # or equivalent token-/flag-aware abort
        raise
 
    await mux.activate_attachment(prepared)
    ```
 
-Here `mux.abort_attachment(prepared)` represents any token-aware cleanup that discards the prepared attachment if and only if it is still current. Implementations MAY expose this as a dedicated API or encode it into `detach()`, but the externally visible requirement is that a failed acknowledgment leaves the mux open and unattached, with no forwarding task started for the failed attachment.
+Here `mux.abort_attachment(prepared)` represents token- and flag-aware cleanup that:
+
+- if `prepared.newly_prepared` is `True` and the corresponding `_Attachment` is still current, discards that candidate attachment and leaves the mux in the same state it would have been in if `prepare_attach()` had failed; and
+- if `prepared.newly_prepared` is `False` and the corresponding `_Attachment` is still the current healthy attachment, leaves that attachment intact.
+
+If `prepared` no longer refers to the current `_Attachment` (a stale handle), `abort_attachment(prepared)` MUST NOT detach whatever attachment is now active.
+
+An implementation MAY expose this as a dedicated API or encode it into an internal helper, but it MUST NOT unconditionally call `detach()` in the idempotent same-agent case.
+
+The externally visible requirement is that a failed acknowledgment:
+
+- never starts forwarding for the failed attachment; and
+- never tears down a previously-established healthy attachment that this `_attach` request merely re-acknowledged.
 
 
 6. `activate_attachment(prepared)` starts the forwarding task and releases the forwarding gate.
@@ -205,10 +218,11 @@ Here `mux.abort_attachment(prepared)` represents any token-aware cleanup that di
 
 If the external session is already attached to `agent_id` and the mux's forwarding task for that agent is healthy, `_attach` is **idempotent**:
 
-- `prepare_attach(agent_id)` returns a `PreparedAttachment` handle that refers to the existing `_Attachment`; and
-- `activate_attachment(prepared)` verifies identity and returns without restarting forwarding or creating a second subscription.
+- `prepare_attach(agent_id)` returns a `PreparedAttachment` handle that refers to the existing `_Attachment` and sets `newly_prepared=False`; and
+- `activate_attachment(prepared)` verifies identity and returns without restarting forwarding or creating a second subscription; and
+- if the adapter fails while writing the repeated acknowledgment, `abort_attachment(prepared)` MUST NOT tear down the pre-existing healthy attachment.
 
-This guarantees that repeated `_attach` requests for the same healthy agent do not duplicate forwarding work or disrupt the existing stream.
+This guarantees that repeated `_attach` requests for the same healthy agent do not duplicate forwarding work or disrupt the existing stream, even when acknowledgment fails.
 
 **Logical response payload (on success):**
 
