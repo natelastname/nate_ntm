@@ -37,8 +37,15 @@ At completion of this epic:
    - overflow is surfaced as an explicit failure for that subscriber.
 5. Closing or replacing an ACP session closes its stream and terminates its subscribers in a well-defined way.
 6. A new ACP session receives a new stream and a new sequence space.
-7. ACP `SessionUpdate` delivery to ACP-aware consumers no longer flows through `AgentEvent` telemetry; the typed stream is the canonical representation.
-8. `subscribe_acp_updates(agent_id)` is the canonical ACP subscription API at the adapter layer. The older ACP-client `subscribe_events`/`iter_events`/`wait_for_event` helpers are considered legacy and should either delegate to this API or be removed once all call sites have migrated.
+7. ACP `SessionUpdate` delivery to ACP-aware consumers inside this runtime MUST
+   flow via `AcpSessionUpdateStream`. The typed stream is the canonical
+   in-memory representation of ACP `session/update` traffic.
+8. All ACP-aware consumers in this runtime MUST subscribe via
+   `subscribe_acp_updates(agent_id)`. New ACP-specific subscription APIs MUST
+   NOT be introduced. Existing helpers such as
+   `subscribe_events`/`iter_events`/`wait_for_event` are considered legacy and
+   MUST either delegate to this API or be removed once all call sites have
+   migrated.
 
 ------------------------------------------------------------------------
 
@@ -48,10 +55,12 @@ This epic intentionally does **not**:
 
 - implement `SwarmACPMux`;
 - implement any ACP multiplexing or fan-out layer on top of `AcpSessionUpdateStream`;
-- remove runtime lifecycle `AgentEvent` producers (for example, process or scheduler events);
+- remove runtime lifecycle event producers for non-ACP telemetry (for example,
+  process or scheduler events);
 - redesign runtime observability or logging strategies;
 - redesign Agent Mail telemetry or its delivery mechanisms;
-- remove the remaining generic runtime event APIs (for example, `/events` WebSocket streaming, `AgentEventStream`, or JSON-RPC `events.*` methods).
+- remove the remaining generic runtime event APIs (for example, `/events`
+  WebSocket streaming or JSON-RPC `events.*` methods).
 
 Those changes belong in later, dedicated epics that can build on the typed ACP session update stream from this document.
 
@@ -59,7 +68,7 @@ Those changes belong in later, dedicated epics that can build on the typed ACP s
 
 ## 3. Core Design Decisions
 
-### 2.1 The stream belongs to a concrete ACP session
+### 3.1 The stream belongs to a concrete ACP session
 
 The stream belongs to `AcpAgentSession`, not to the logical agent.
 
@@ -75,7 +84,14 @@ The old stream closes before the old session is discarded.
 
 Any long-lived attachment to the stream (for example, a future mux or bridge) targets one concrete ACP session. It does not silently follow the logical agent into a replacement session. When the session closes, the attachment ends. Reattaching to a replacement session is an explicit higher-level operation owned by the caller.
 
-### 2.2 Keep the real ACP type
+**Ownership**
+
+- Each `AcpAgentSession` exclusively owns one `AcpSessionUpdateStream`.
+- The stream is created when the session is created.
+- The stream is closed when the session terminates.
+- A stream MUST NOT be shared between sessions.
+
+### 3.2 Keep the real ACP type
 
 Use the actual ACP SDK `SessionUpdate` type or a precise internal union of the SDK update models.
 
@@ -99,7 +115,7 @@ __all__ = ["SessionUpdate”]
 
 The exact import should match the installed ACP SDK.
 
-### 2.3 Use a small receipt record
+### 3.3 Use a small receipt record
 
 The stream should retain the exact `SessionUpdate` object plus only the metadata required for ordering and diagnostics.
 
@@ -120,7 +136,7 @@ The wrapper exists for specific reasons:
 
 Do not add generic fields such as `source`, string `type`, arbitrary `payload`, or duplicated agent identity.
 
-### 2.4 The stream assigns sequence numbers
+### 3.4 The stream assigns sequence numbers
 
 Callers publish typed updates, not preconstructed records:
 
@@ -130,9 +146,14 @@ stream.publish(update, received_at=clock())
 
 The stream assigns the next sequence number and constructs `ReceivedSessionUpdate`.
 
-This creates one canonical sequencing path and prevents callers from supplying duplicate or out-of-order sequence values.
+Sequence numbers are 1-based and monotonically increasing **per session** (that
+is, per `AcpSessionUpdateStream`). There is no requirement for a single global
+sequence across sessions; different sessions may reuse the same sequence values.
 
-### 2.5 Replay and live delivery must have an atomic boundary
+This creates one canonical sequencing path and prevents callers from supplying
+duplicate or out-of-order sequence values.
+
+### 3.5 Replay and live delivery must have an atomic boundary
 
 Subscription registration must establish one sequence boundary atomically relative to publication.
 
@@ -160,7 +181,7 @@ retained updates through sequence N
 then live updates beginning at sequence N+1
 ```
 
-### 2.6 Overflow is explicit failure
+### 3.6 Overflow is explicit failure
 
 Each subscriber has a bounded live queue.
 
@@ -180,7 +201,7 @@ its view of the stream as invalid.
 
 The retained session history remains bounded independently of subscriber queues.
 
-### 2.7 Closure is persistent
+### 3.7 Closure is persistent
 
 The stream must retain closed state:
 
@@ -199,7 +220,7 @@ Required behavior:
 
 A session failure may close the stream with an associated cause. Normal session shutdown may close it without one.
 
-### 2.8 Missing sessions are explicit errors
+### 3.8 Missing sessions are explicit errors
 
 Attempting to subscribe to an agent that has no active ACP session should raise a clear exception such as:
 
@@ -211,9 +232,9 @@ Do not return an empty iterator. An empty iterator would make an invalid attachm
 
 ------------------------------------------------------------------------
 
-## 3. New Runtime Types
+## 4. New Runtime Types
 
-### 3.1 ACP type module
+### 4.1 ACP type module
 
 Create:
 
@@ -227,7 +248,7 @@ Responsibilities:
 - isolate the exact ACP SDK import path;
 - contain no serialization or payload-normalization logic.
 
-### 3.2 Session update stream module
+### 4.2 Session update stream module
 
 Create:
 
@@ -235,7 +256,7 @@ Create:
 src/nate_ntm/runtime/acp_update_stream.py
 ```
 
-Define the following runtime types (see sections 2.3 and 9.1 for the
+Define the following runtime types (see sections 3.3 and 9.1 for the
 canonical shape and reference implementation):
 
 - ``ReceivedSessionUpdate`` – the small, immutable receipt record wrapping a
@@ -289,7 +310,7 @@ Use the smallest synchronization mechanism that correctly protects publication, 
 
 ------------------------------------------------------------------------
 
-## 4. Implementation Phases
+## 5. Implementation Phases
 
 ## Phase 1 — Add the typed session stream
 
@@ -361,7 +382,7 @@ Change `NateNtmAcpProtocolClient.session_update` so it forwards:
 
 It must not:
 
-- construct `AgentEvent`;
+- construct generic envelope or telemetry objects;
 - serialize the update;
 - infer a generic string event type;
 - assign the canonical session sequence.
@@ -394,8 +415,10 @@ async def subscribe_acp_updates(
 
 Behavior:
 
-- locate the agent's current `AcpAgentSession`;
-- raise `AgentSessionNotActive` if no session is recorded for the agent **or** the recorded session's status is not `"starting"` or `"running"`;
+- resolve the agent's currently active `AcpAgentSession` from the session
+  registry **exactly once** when the subscription begins;
+- raise `AgentSessionNotActive` if no session is recorded for the agent **or**
+  the recorded session's status is not `"starting"` or `"running"`;
 - capture that concrete session;
 - delegate to its `update_stream.subscribe()`;
 - remain attached only to that session;
@@ -405,7 +428,7 @@ Do not make this method automatically move to a replacement session.
 
 Once all ACP subscription call sites have migrated, remove any remaining ACP-specific subscription machinery (for example `_event_subscribers`, `_EVENT_QUEUE_MAXSIZE`, `_EVENT_STREAM_CLOSED`, `subscribe_events`, `iter_events`, `wait_for_event`) rather than keeping it in parallel with the typed stream. These helpers may exist only in older specs or experimental branches; they SHOULD NOT be (re)introduced as part of this epic.
 
-Do not retain two canonical subscription systems. Convenience wrappers are fine, but they must delegate to `subscribe_acp_updates()` and MUST NOT define independent buffering or delivery semantics.
+Do not retain two canonical subscription systems. Convenience wrappers are fine, but they MUST delegate to `subscribe_acp_updates()` and MUST NOT define independent buffering or delivery semantics.
 
 ------------------------------------------------------------------------
 
@@ -462,9 +485,13 @@ into the ACP SDK directly.
 
 **`src/nate_ntm/runtime/acp_update_stream.py`**
 
-The normative contract for the stream lives in section 2 above (types,
-sequence and replay invariants, overflow semantics, and closure behavior). In
-this repository, that contract is realized by a small concrete implementation.
+Sections 1–4 define the required externally observable behavior for
+`AcpSessionUpdateStream` and `ReceivedSessionUpdate` (types, sequence and
+replay invariants, overflow semantics, closure behavior, and the
+`subscribe_acp_updates()` adapter API).
+
+Section 9 is **non-normative**: it provides a reference implementation that
+illustrates one concrete way to satisfy those requirements in this repository.
 Other implementations MAY differ internally as long as they satisfy the same
 external behavior.
 
@@ -828,7 +855,10 @@ The runtime should not keep this stream on `AgentRuntimeState`; it is scoped to 
 - `src/nate_ntm/runtime/acp_protocol_client.py`
 - `src/nate_ntm/runtime/acp_connection.py`
 
-`NateNtmAcpProtocolClient` currently receives `session_update` callbacks from the ACP SDK and translates them into `AgentEvent`. Replace that with a typed callback that forwards real `SessionUpdate` values into the owning `BaseAcpClient`.
+`NateNtmAcpProtocolClient` receives `session_update` callbacks from the ACP SDK.
+Wire those callbacks into the owning `BaseAcpClient` via a typed sink that
+forwards real `SessionUpdate` values into the owning `AcpAgentSession`'s
+`AcpSessionUpdateStream`.
 
 **Define a sink type alias:**
 
@@ -859,7 +889,8 @@ class NateNtmAcpProtocolClient(...):
         self._clock = clock or datetime.utcnow
 
     async def session_update(self, session_id: str, update: SessionUpdate, **_: object) -> None:
-        # Do not construct AgentEvent here.
+        # Forward the typed update into the sink; higher layers own publishing
+        # into the session's AcpSessionUpdateStream.
         received_at = self._clock()
         self._event_sink(self._agent_id, session_id, update, received_at)
 ```
@@ -874,7 +905,6 @@ from nate_ntm.runtime.acp_update_stream import (
     StreamClosedError,
 )
 from nate_ntm.runtime.acp_types import SessionUpdate
-from nate_ntm.runtime.acp_event_translation import translate_acp_update
 
 
 class BaseAcpClient:
@@ -893,10 +923,9 @@ class BaseAcpClient:
         responsible for forwarding each typed :class:`SessionUpdate` into the
         owning :class:`AcpAgentSession`'s :class:`AcpSessionUpdateStream`.
 
-        During the AgentEvent→ACP migration, it also acts as the bridge back
-        into the legacy :class:`AgentEvent` telemetry pipeline by translating
-        each published update via :func:`translate_acp_update` and emitting the
-        resulting event through :meth:`_emit_event`.
+        It SHOULD NOT drop updates silently and SHOULD avoid mutating
+        :class:`SessionUpdate` instances; callers can rely on a faithful,
+        ordered view of each session's ACP updates.
         """
 
         session = self._sessions.get(agent_id)
@@ -940,16 +969,6 @@ class BaseAcpClient:
                 extra={"agent_id": agent_id, "session_id": session_id},
             )
             raise
-
-        # During migration, also forward via the legacy AgentEvent pipeline.
-        event = translate_acp_update(
-            agent_id=agent_id,
-            session_id=session_id,
-            update=receipt.update,
-            sequence=receipt.sequence,
-            timestamp=receipt.received_at,
-        )
-        self._emit_event(event)
 ```
 
 Then, when constructing `NateNtmAcpProtocolClient` in `acp_connection.py` or within `BaseAcpClient` startup code, pass the bound `_on_session_update` method as `event_sink`.
@@ -1002,11 +1021,11 @@ Update tests that consume ACP session updates to use this API instead of the old
 
  
 
-## 5. Validation Strategy
+## 6. Validation Strategy
 
 Keep validation focused on a few end-to-end guarantees for the typed ACP session stream and its adapter-level subscription API. Avoid recreating the older generic event tests field by field; instead, assert the new stream contract directly.
 
-### 5.1 Stream contract test
+### 6.1 Stream contract test
 
 Add one focused test covering:
 
@@ -1020,7 +1039,7 @@ Add one focused test covering:
 
 Use real representative ACP `SessionUpdate` models.
 
-### 5.2 Replay/live race test
+### 6.2 Replay/live race test
 
 Add one concurrency test that repeatedly publishes while a subscriber attaches.
 
@@ -1028,7 +1047,7 @@ Assert that the subscriber observes a contiguous, ordered sequence with no dupli
 
 This is the most important concurrency test in the refactor.
 
-### 5.3 Overflow and closure test
+### 6.3 Overflow and closure test
 
 Add one test covering:
 
@@ -1038,11 +1057,13 @@ Add one test covering:
 - publication after stream close raises `StreamClosedError`;
 - subscribing after close replays the final retained history and terminates.
 
-Existing tests should otherwise be updated only where behavior changed (for example, where ACP updates are now observed via `subscribe_acp_updates` rather than generic `AgentEvent` telemetry).
+Existing tests should otherwise be updated only where behavior changed (for
+example, where ACP updates are now observed via `subscribe_acp_updates`
+rather than via any legacy generic event telemetry).
 
 ------------------------------------------------------------------------
 
-## 6. Expected File Changes
+## 7. Expected File Changes
 
 Primary implementation files for this epic:
 
@@ -1066,13 +1087,16 @@ Other tests and runtime components may be updated as needed where they directly 
 
 ------------------------------------------------------------------------
 
-## 7. Future Work
+## 8. Future Work
 
 This document deliberately stops at `AcpSessionUpdateStream` and `subscribe_acp_updates()`. Later epics are expected to:
 
 - introduce `SwarmACPMux` (or an equivalent component) that consumes `subscribe_acp_updates()` and forwards typed `SessionUpdate` values to external ACP connections;
-- migrate downstream consumers (for example, runtime APIs or tooling) to depend on the typed stream rather than generic `AgentEvent` envelopes;
-- remove the remaining generic runtime event system, including `AgentEvent`, `AgentEventStream`, `/events` WebSocket streaming, and related JSON-RPC methods, once nothing depends on them;
+- migrate downstream consumers (for example, runtime APIs or tooling) to depend
+  on the typed stream rather than any legacy generic event envelopes;
+- remove the remaining generic runtime event system (for example,
+  `AgentEvent`, `AgentEventStream`, `/events` WebSocket streaming, and related
+  JSON-RPC methods) once nothing depends on it;
 - update documentation across the repo (for example, the runtime orchestrator spec and the Swarm/ACP mux spec) so they describe the typed ACP session update stream as the canonical path.
 
 Those future changes should treat this epic's types and semantics as stable inputs rather than modifying the stream contract.
