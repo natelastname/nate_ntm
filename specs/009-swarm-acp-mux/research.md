@@ -1,208 +1,210 @@
-# Research & Design Decisions: SwarmACPMux (Feature 008)
+# Research & Design Decisions: SwarmACPMux (Epic 009)
 
-This document records the key design decisions for SwarmACPMux and the replay-capable agent event stream, updated to align with the current runtime and spec 001 contracts.
+This document records the key design decisions for SwarmACPMux based on the Epic 009 feature spec and the existing runtime orchestrator contracts (spec 001). It is the Phase 0 output for `/speckit.plan`.
 
-It supersedes earlier notes that:
+Each section follows the pattern:
 
-- pushed ACP SDK `SessionUpdate` types into `AgentEvent`; and
-- treated reserved swarm controls as `SessionUpdate.name` values,
+- **Decision**
+- **Rationale**
+- **Alternatives considered**
 
-both of which conflict with existing boundaries in the codebase.
+---
 
 ## 1. Role and Boundaries of SwarmACPMux
 
-**Decision**: Implement `SwarmACPMux` as a *connection-scoped* mux between a single external ACP session and the nate_ntm swarm.
+**Decision**: Implement `SwarmACPMux` as a *connection-scoped* router over the typed ACP session streaming layer from Epic 008.
 
 - One mux instance per external ACP session.
-- Each mux is attached to **at most one agent at a time**, but it may switch attachments over its lifetime.
-- The mux owns:
-  - connection-local attachment state (`attached_agent_id`);
-  - a forwarding task that reads from a per-agent event subscription and writes to the external ACP connection;
-  - connection-local closed/open state.
-- The mux does **not** own:
+- Each mux is attached to **at most one agent at a time**, but may switch attachments over its lifetime.
+- The mux owns only connection-local state:
+  - `attached_agent_id`;
+  - the current `_Attachment` record (retained subscription + forwarding task);
+  - a `_lifecycle_lock` to serialize mutating operations;
+  - a `_failure` future representing the first fatal forwarding error;
+  - `_closed` flag.
+- The mux **does not own**:
   - agent lifecycle or ACP connections to agents;
   - swarm metadata or persistent state;
-  - the representation of ACP protocol messages.
+  - ACP wire encoding/decoding;
+  - per-agent replay buffers or subscriber queues.
 
 **Rationale**:
 
-- Keeps per-agent ACP sessions in `NateOhaAcpClient` (or another `SwarmAgentClient`), as they are today.
-- Keeps swarm metadata and event history in `RuntimeDaemon` / `SwarmState`, matching spec 001.
-- Avoids creating a second "mini-runtime"; the mux is a narrow coordination layer.
+- Keeps per-agent ACP sessions and typed `AcpSessionUpdateStream` behavior in the Epic 008 layer.
+- Keeps swarm metadata and event history in `RuntimeDaemon` / swarm state, as defined in spec 001.
+- Avoids creating a second mini-runtime; the mux is a narrow, connection-scoped coordinator.
 
-## 2. Parallel ACP Update and Agent Event Streams
+**Alternatives considered**:
 
-**Decision**: Keep two distinct streams per agent:
+- **Heavier mux owning ACP connections and agent lifecycle**
+  - Rejected: would duplicate responsibilities of `NateOhaAcpClient` and `RuntimeDaemon`, complicating failure handling and testing.
+- **Global mux shared across sessions**
+  - Rejected: breaks the one-mux-per-external-session invariant and makes it harder to reason about attachment state and error propagation for individual clients.
 
-1. An **ACP update stream** carrying exact protocol objects (e.g., `SessionUpdate`) used for ACP transport and mux forwarding.
-2. A **runtime event history** (`AgentEvent` records) used for status APIs, diagnostics, dashboards, and logs.
+---
 
-These streams may be updated from the same inbound ACP callbacks, but they serve different purposes and are not collapsed into a single generic bus.
+## 2. Typed ACP Update Path vs. Telemetry
 
-Conceptually:
+**Decision**: SwarmACPMux consumes typed ACP updates exclusively via `subscribe_acp_updates()` and forwards the underlying `SessionUpdate` objects unchanged. `AgentEvent` remains an observability-only model.
 
-```python
-async def session_update(..., update: SessionUpdate) -> None:
-    # Transport path: exact ACP updates (for mux and other ACP-aware consumers)
-    self._acp_update_stream.publish(update)
+- The canonical internal path is:
 
-    # Telemetry path: summarized runtime event
-    event = summarize_acp_update(update)
-    self._agent_event_history.publish(event)
-```
+  ```text
+  ACP SDK callback
+      ↓
+  NateOhaAcpClient / AcpAgentSession
+      ↓
+  AcpSessionUpdateStream (per agent)
+      ↓
+  subscribe_acp_updates(agent_id)
+      ↓
+  SwarmACPMux
+      ↓
+  ExternalACPConnection.session_update(session_id, update)
+  ```
 
-A correct ACP update stream provides:
-
-- bounded **retained history of `SessionUpdate` objects** per agent;
-- **per-subscriber queues** with drop-oldest semantics (as in the current `NateOhaAcpClient` design);
-- a single **replay-then-live** sequence for each subscriber (retained history, then live updates, then closure sentinel).
-
-`SwarmACPMux` subscribes to the ACP update stream and forwards those exact protocol objects to the external client. It does **not** reconstruct ACP messages from `AgentEvent` telemetry.
-
-`AgentEvent` history remains dedicated to the runtime’s observability surfaces (status API, dashboards, logs) and can safely lose protocol-level detail.
-
-**Rationale**:
-
-- Preserves the existing, ACP-specific subscription mechanism as the transport bus for protocol updates.
-- Keeps `AgentEvent` as a derived, runtime-oriented view rather than a second transport layer.
-- Avoids introducing an extra replay layer by having the mux subscribe directly to telemetry.
-- Keeps responsibilities clear: ACP streams for protocol delivery; AgentEvent history for observability.
-## 3. AgentEvent Representation and ACP Boundary
-
-**Decision**: Keep `AgentEvent` as a **normalized, ACP-agnostic** runtime model. Do not embed ACP SDK `SessionUpdate` objects in `AgentEvent`.
-
-`AgentEvent` remains:
-
-```python
-@dataclass(slots=True)
-class AgentEvent:
-    event_id: str
-    timestamp: datetime
-    agent_id: str
-    source: Literal["ACP", "AgentMail", "Runtime", "Client"]
-    type: str
-    payload: Mapping[str, object]  # JSON-serializable
-```
-
-ACP-specific concerns live in:
-
-- the ACP integration modules, which convert from ACP SDK types into `AgentEvent` payloads; and
-- the Swarm ACP server adapter, which converts from normalized `AgentEvent` payloads back into ACP SDK messages for external clients.
+- `ReceivedSessionUpdate` metadata (sequence, timestamps) is used internally but is **not** forwarded over ACP; only the underlying `SessionUpdate` is.
+- Any `AgentEvent` telemetry derived from ACP activity is emitted by the runtime daemon / observability pipeline, not by the mux.
 
 **Rationale**:
 
-- Matches the current design that keeps ACP models behind a boundary, so the rest of the runtime depends only on `AgentEvent`.
-- Keeps logging, serialization, and persistence simple.
-- Avoids having two representations of the same update (SDK object vs. normalized payload).
+- Ensures there is a single, typed ACP streaming abstraction (Epic 008) responsible for replay, ordering, overflow, and closure semantics.
+- Keeps the runtime core (`AgentEvent`, status APIs) ACP-agnostic and JSON-serializable.
+- Avoids introducing a second buffer or subscription system for ACP updates.
 
-**Alternative (rejected)**: Attach a `SessionUpdate`-typed field (`acp_update`) to `AgentEvent`.
+**Alternatives considered**:
 
-- Would couple the runtime core to ACP types.
-- Would complicate serialization and replay.
-- Would diverge from the existing code’s intentional boundary.
+- **Driving ACP transport from `AgentEvent` history**
+  - Rejected: would require reconstructing protocol-level updates from lossy telemetry, and would conflate observability with transport.
+- **Allowing the mux to publish its own `AgentEvent` records**
+  - Rejected: better to keep telemetry responsibilities in the daemon and dedicated observability components; the mux stays focused on routing.
 
-## 4. Reserved Swarm-Control Operations
+---
 
-**Decision**: Treat `_attach`, `_detach`, `_swarm_status`, and `_agent_detail` as **logical swarm-control operations**, not as a special case of `SessionUpdate.name` inside the runtime.
+## 3. Attachment Transaction (prepare / acknowledge / activate)
 
-- These are *client-to-swarm* control operations invoked via ACP extension mechanisms (method calls or notifications) at the protocol layer.
+**Decision**: Model attachment as a three-stage transaction:
+
+1. `prepare_attach(agent_id)` establishes the concrete ACP subscription and records an `_Attachment`, but does **not** start forwarding.
+2. The outer adapter sends the `_attach` acknowledgment over ACP.
+3. `activate_attachment(prepared)` starts the forwarding task and releases its gate.
+
+A convenience `attach(agent_id, acknowledge=...)` helper is allowed **only** if it preserves this ordering by calling `prepare_attach()`, then `acknowledge()`, then `activate_attachment()`.
+
+**Rationale**:
+
+- Makes "acknowledgment before replay" a structural guarantee rather than a scheduling accident.
+- Ensures that if `subscribe_acp_updates()` fails (including `AgentSessionNotActive`), the adapter never sends an attach success acknowledgment.
+- Prevents stale acknowledgments from activating outdated attachments via the `PreparedAttachment.token` identity check.
+
+**Alternatives considered**:
+
+- **Single-step `attach()` that both prepares and activates**
+  - Rejected: does not give the adapter a clean point to send the acknowledgment before replayed events begin.
+- **Starting forwarding before acknowledgment and relying on buffering at the adapter**
+  - Rejected: harder to reason about ordering guarantees and error handling; the mux should not own additional buffering.
+
+---
+
+## 4. Concurrency & Identity: `_lifecycle_lock`, `_Attachment`, and Tokens
+
+**Decision**: Serialize lifecycle transitions with `_lifecycle_lock` and use concrete `_Attachment` identity (plus a token) to avoid stale completion and activation.
+
+- `prepare_attach()`, `activate_attachment()`, `detach()`, and `close()` acquire `_lifecycle_lock` before mutating shared state.
+- `_Attachment` records:
+  - `agent_id`;
+  - the retained subscription context manager;
+  - the `AsyncIterator[ReceivedSessionUpdate]`;
+  - a `forwarding_enabled` event;
+  - the forwarding `Task`.
+- `PreparedAttachment` carries a token that is checked by `activate_attachment()` to ensure it still refers to the current `_Attachment`.
+- `_attachment_finished()` verifies identity before clearing attachment state when a forwarding task completes.
+
+**Rationale**:
+
+- Deterministic behavior when attachments, detaches, and close operations race.
+- Prevents an old forwarding task from clearing a newer attachment.
+- Ensures that only the current attachment can be activated and only once.
+
+**Alternatives considered**:
+
+- **Lock-free lifecycle with best-effort checks**
+  - Rejected: too hard to reason about in the presence of concurrent attaches/detaches and task completion races.
+- **Identity based solely on `agent_id`**
+  - Rejected: does not distinguish between two different ACP sessions for the same agent or between old and new attachments.
+
+---
+
+## 5. Failure Observation and `wait_failed()`
+
+**Decision**: Use a single `_failure` future to represent the first fatal forwarding error, and expose it via `wait_failed()`.
+
+- `_run_forwarding()` calls `_report_failure(exc)` on unexpected exceptions from either:
+  - consuming the ACP subscription iterator; or
+  - writing to `ExternalACPConnection.session_update()`.
+- `_report_failure()` completes `_failure` exactly once.
+- `wait_failed()` awaits `_failure` and re-raises the stored exception.
+- Normal task cancellation (from `detach()` / `close()`) and clean ACP stream exhaustion are **not** treated as failures and do not complete `_failure`.
+
+**Rationale**:
+
+- Gives the outer connection handler a single, explicit point to observe forwarding failures.
+- Fits naturally into structured concurrency patterns where one task waits on `mux.wait_failed()` while another serves inbound requests.
+
+**Alternatives considered**:
+
+- **Let detached background task exceptions bubble through `asyncio` logging only**
+  - Rejected: too easy to miss failures; makes it harder to implement robust adapters.
+- **Track per-attachment failures only**
+  - Rejected: the external session semantics are simpler when there is exactly one failure terminal state for the mux.
+
+---
+
+## 6. Reserved Swarm-Control Operations
+
+**Decision**: Treat `_attach`, `_detach`, `_swarm_status`, and `_agent_detail` as logical swarm-control operations handled at the adapter/mux boundary, not as special `SessionUpdate` names.
+
 - The Swarm ACP server adapter:
-  - detects the appropriate ACP request/notification for each operation;
-  - calls the corresponding mux method (`attach`, `detach`, `get_swarm_status`, `get_agent_detail`);
-  - translates results and errors back into ACP responses.
-
-The mux itself only exposes Python methods; it does not know how the ACP SDK represents those operations on the wire.
-
-**Rationale**:
-
-- Keeps ACP protocol concerns inside the adapter, not the mux.
-- Matches the actual code path where `session_update()` is an outbound callback from the agent-side ACP client, not the inbound control surface.
-- Avoids binding the design to any particular `SessionUpdate` representation.
-
-## 5. Error Model
-
-**Decision**: Use a small, explicit error hierarchy for mux-level domain failures, and let the ACP adapter map these to protocol-level errors.
-
-```python
-class SwarmACPMuxError(RuntimeError):
-    pass
-
-class SwarmACPMuxClosedError(SwarmACPMuxError):
-    pass
-
-class UnknownAgentError(SwarmACPMuxError):
-    pass
-
-class NoAttachedAgentError(SwarmACPMuxError):
-    pass
-
-class UnsupportedReservedUpdateError(SwarmACPMuxError):
-    pass
-```
-
-- `UnknownAgentError` is raised when `_require_known_agent` cannot find an agent in durable `SwarmState.agents`.
-- `NoAttachedAgentError` is raised when a prompt/interrupt is attempted with no current attachment.
-- `SwarmACPMuxClosedError` is raised after `close()`.
-- `UnsupportedReservedUpdateError` is raised when the adapter asks for an unknown reserved operation.
+  - decodes reserved controls from ACP requests/notifications;
+  - calls the appropriate mux method (`prepare_attach`/`activate_attachment` or `attach`, `detach`, `get_swarm_status`, `get_agent_detail`);
+  - translates results and domain errors back into protocol-level responses.
+- The mux itself exposes Python methods only and is not tied to a specific ACP SDK wire representation.
 
 **Rationale**:
 
-- Gives clean, domain-specific failure modes for tests and adapter logic.
-- Keeps internal details (tracebacks, transient errors) inside the runtime logs.
-- Leaves the mapping to ACP error codes to the adapter.
+- Keeps ACP protocol concerns localized in the adapter.
+- Matches the fact that `SessionUpdate` models outbound updates, while reserved controls are inbound operations.
+- Avoids constraining the design to a particular ACP extension encoding.
 
-## 6. Swarm and Agent Views (Alignment with Spec 001)
+**Alternatives considered**:
 
-**Decision**: Reuse the existing runtime control API shapes for swarm overview and agent detail.
+- **Encoding reserved controls as special `SessionUpdate` names or variants**
+  - Rejected: conflates inbound control with outbound update transport and would couple mux semantics to a particular SDK representation.
 
-- For swarm status, use the `swarm.get_overview` result shape defined in
-  `specs/001-swarm-runtime-orchestrator/contracts/runtime-api.md`.
-- For agent detail, use the `agent.get_detail` result shape from the same contract, including the `events` list of `AgentEvent` objects.
+---
 
-`SwarmACPMux.get_swarm_status()` and `.get_agent_detail()` add only small mux-local annotations (such as `attached_agent_id` or `attached: bool`) around these existing payloads.
+## 7. Error Model and External Codes
 
-**Rationale**:
+**Decision**: Use a small, explicit error hierarchy for mux-level domain failures and let the adapter map them to ACP-visible error codes.
 
-- Avoids duplicating or drifting schemas between the runtime control API and ACP-facing controls.
-- Makes it straightforward to test ACP-level behavior against the same shapes used by the CLI and dashboards.
+Representative error classes from the spec:
 
-## 7. Attach/Detach Semantics and Ordering
-
-**Decision**:
-
-- Attaching requires only that the agent be part of the durable swarm (present in `SwarmState.agents`).
-- Attachment is allowed even if the agent is currently failed or stopped; replay is still meaningful for diagnostics.
-- Detach is **idempotent**: detaching an already-detached mux is a no-op.
-- The ACP adapter must ensure that the client receives an **attach acknowledgment before any replayed events** for the new attachment.
-
-Within the mux:
-
-- `attach(agent_id)`:
-  - `_ensure_open()`;
-  - `_require_known_agent(agent_id)`;
-  - if already attached to the same agent with a live forwarding task, return early;
-  - otherwise, `await detach()` and start a new `_forward_agent_events(agent_id)` task.
-- `_forward_agent_events`:
-  - opens a `subscribe_events(agent_id)` context;
-  - forwards each `AgentEvent` via `_forward_external_event`;
-  - on normal closure, clears `attached_agent_id` and `_forwarding_task` if they still reference this subscription.
+- `SwarmACPMuxError` (base)
+- `SwarmACPMuxClosedError`
+- `UnknownAgentError`
+- `NoAttachedAgentError`
+- `StaleAttachmentError`
+- `UnsupportedReservedUpdateError`
 
 **Rationale**:
 
-- Keeps the mux’s attachment model simple and observable.
-- Preserves the diagnostic use case of attaching to failed agents to inspect recent history.
-- Gives external clients a clear ordering boundary for events under each attachment.
+- Gives tests and adapter logic clear, domain-specific failure modes.
+- Keeps protocol-level error encoding (strings, enums, error envelopes) in the adapter.
+- Allows clean mapping to stable error codes like `MUX_NO_ATTACHED_AGENT`, `MUX_UNKNOWN_AGENT`, etc.
 
-## 8. Open Items (Non-Blocking for MVP)
+**Alternatives considered**:
 
-These design questions are acknowledged but not required for the first implementation of SwarmACPMux:
-
-1. **Exact ACP extension shapes**
-   - Which ACP extension method/notification names and payloads are used for `_attach`, `_detach`, `_swarm_status`, `_agent_detail`?
-   - This will be pinned in the Swarm ACP server adapter and the 008 contracts.
-
-2. **Event retention limits**
-   - Concrete limits (max events or time window) for `AgentEventStream` are not fixed here; the MVP should match existing runtime behavior and make limits configurable only if needed.
-
-3. **Cross-feature refactoring**
-   - If both the runtime control API (spec 001) and SwarmACPMux need the same swarm/agent views, consider refactoring shared helpers/contracts later to avoid duplication.
+- **Surfacing raw exceptions directly at the ACP layer**
+  - Rejected: leaks internal details and makes protocol behavior unstable across refactors.
+- **Using only generic `RuntimeError` subclasses without domain meaning**
+  - Rejected: harder to test and reason about.

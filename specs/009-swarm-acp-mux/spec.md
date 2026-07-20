@@ -1,210 +1,125 @@
 # SwarmACPMux
 
-## Purpose
+## 1. Purpose
 
-`SwarmACPMux` builds on the typed ACP session streaming layer introduced in Epic 008.
+`SwarmACPMux` is the connection-scoped routing layer between one external swarm ACP session and the agents managed by the runtime.
 
-> Build `SwarmACPMux`, which multiplexes multiple independent ACP sessions into a single swarm-facing update stream while preserving typed ACP semantics.
+For each external swarm ACP session, the mux:
 
-Concretely, for each external "swarm ACP" session, `SwarmACPMux`:
+- exposes swarm-level control operations such as `_attach`, `_detach`, `_swarm_status`, and `_agent_detail`;
+- attaches the external session to at most one agent at a time;
+- consumes that agent's typed ACP updates through `subscribe_acp_updates()`;
+- forwards the underlying `SessionUpdate` objects to the external ACP connection;
+- routes ordinary prompt and interrupt requests to the attached agent.
 
-- exposes swarm-level control operations (for example `_attach`, `_detach`, `_swarm_status`, `_agent_detail`);
-- attaches that external session to **one agent at a time**, but may switch attachments over its lifetime;
-- subscribes to the attached agent's typed ACP session updates via `subscribe_acp_updates()`;
-- forwards those typed updates into a single, ordered swarm-facing session stream.
+The mux may switch attachments over its lifetime, thereby multiplexing multiple independent agent ACP sessions into one external swarm-facing session.
 
-`SwarmACPMux` does **not** replace the ACP transport or stream implementation. It is a thin routing layer that multiplexes existing per-session streams into one swarm-level view.
+`SwarmACPMux` is intentionally small. It does not implement ACP transport, retained history, replay, subscriber queues, overflow behavior, or per-agent update ordering.
 
-Ownership is divided as follows:
-
-```
-RuntimeDaemon
-    owns swarm state and swarm-level status
-
-NateOhaAcpClient / AcpAgentSession
-    own per-agent ACP sessions and per-session update streams
-
-AcpSessionUpdateStream + subscribe_acp_updates()  (Epic 008)
-    own typed ACP SessionUpdate delivery, replay, ordering, overflow and closure semantics
-
-SwarmACPMux (Epic 009)
-    owns swarm-facing attachment and routing over typed updates
-
-Swarm ACP server adapter
-    owns ACP protocol decoding/encoding and reserved control dispatch
-```
-
-This design assumes Epic 008 has already delivered:
-
-- `AcpSessionUpdateStream` and `ReceivedSessionUpdate`;
-- a per-session, session-owned update stream on `AcpAgentSession`;
-- the canonical `subscribe_acp_updates()` API;
-- direct typed `SessionUpdate` publication from ACP callbacks; and
-- ACP updates no longer routed through `AgentEvent` for transport (they may still be summarized into `AgentEvent` for observability).
+Those responsibilities belong to Epic 008.
 
 ------------------------------------------------------------------------
 
-## Location
+## 2. Ownership
 
-The class should live in:
+```
+RuntimeDaemon
+    owns durable swarm membership, agent metadata, and swarm-level status
+
+NateOhaAcpClient / AcpAgentSession
+    own individual ACP agent sessions
+
+AcpSessionUpdateStream
+    owns typed SessionUpdate publication, replay, ordering, overflow,
+    subscriber management, and closure semantics
+
+SwarmACPMux
+    owns one external session's attachment and routing state
+
+Swarm ACP server adapter
+    owns ACP protocol handling, reserved-control dispatch,
+    response encoding, and external connection lifetime
+```
+
+One `SwarmACPMux` instance exists per external swarm ACP session.
+
+The mux must not be shared between external sessions.
+
+------------------------------------------------------------------------
+
+## 3. Epic 008 dependency
+
+Epic 009 assumes Epic 008 provides:
+
+- `SessionUpdate`;
+- `ReceivedSessionUpdate`;
+- `AcpSessionUpdateStream`;
+- one update stream owned by each concrete `AcpAgentSession`;
+- `subscribe_acp_updates(agent_id)`;
+- typed publication of ACP callbacks into the owning session stream.
+
+The canonical internal update path is:
+
+```
+ACP SDK callback
+    ↓
+NateOhaAcpClient
+    ↓
+AcpAgentSession.update_stream
+    ↓
+subscribe_acp_updates()
+    ↓
+SwarmACPMux
+    ↓
+external ACP connection
+```
+
+`SwarmACPMux` must consume ACP updates only through `subscribe_acp_updates()`.
+
+It must not introduce:
+
+- another ACP subscriber registry;
+- another replay buffer;
+- another queue or overflow policy;
+- another ACP subscription API;
+- another internal update representation.
+
+The existing `AgentEvent` pipeline may continue to receive projections of ACP activity for logging or observability. It is not an input to the mux.
+
+The mux does not emit `AgentEvent` telemetry; any such projections remain the responsibility of the runtime daemon or surrounding observability pipeline.
+
+
+------------------------------------------------------------------------
+
+## 4. Location
+
+The implementation should live at:
 
 ```
 src/nate_ntm/runtime/swarm_acp_mux.py
 ```
 
-This places it beside the runtime components it coordinates:
-
-```
-src/nate_ntm/runtime/
-├── acp_client.py
-├── acp_protocol_client.py
-├── agents.py
-├── daemon.py
-├── events.py
-├── state.py
-├── swarm_acp_mux.py
-└── swarm_state.py
-```
-
-`NateOhaAcpClient` remains responsible for ACP connections to individual agents. `SwarmACPMux` represents the external connection into the swarm as a whole.
-
 ------------------------------------------------------------------------
 
-## Architecture
+## 5. Interfaces
 
-The mux participates in two distinct paths.
+### 5.1 SwarmAgentClient
 
-### External control and request path
-
-```
-Customized external ACP client
-
-        |
-        | ACP requests and reserved sessionUpdate controls
-        v
-Swarm ACP server adapter
-
-        |
-        | explicit SwarmACPMux method calls
-        v
-SwarmACPMux
-
-        |
-        | ordinary attached-agent requests
-        v
-NateOhaAcpClient
-
-        |
-        v
-nate-oha ACP process
-```
-
-The customized external client may be an `agent-shell` implementation that understands swarm-specific reserved updates.
-
-Examples include:
+The mux depends only on the agent operations it uses:
 
 ```
-_attach
-_detach
-_swarm_status
-_agent_detail
-```
+from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager
+from typing import Protocol
 
-These are incoming client-to-swarm control operations.
-
-### Swarm session update path
-
-At the update-stream boundary established by Epic 008, the architecture is:
-
-```
-AcpAgentSession
-        ↓
-subscribe_acp_updates()
-        ↓
-SwarmACPMux
-        ↓
-Swarm session stream
-        ↓
-Swarm runtime / external ACP client
-```
-
-More concretely, for a single attached agent:
-
-- `AcpAgentSession` owns a per-session `AcpSessionUpdateStream`.
-- `NateOhaAcpClient.subscribe_acp_updates(agent_id)` exposes that stream as an async iterator of `ReceivedSessionUpdate` values.
-- `SwarmACPMux` consumes that iterator for the currently attached agent and forwards each typed `SessionUpdate` to the external ACP connection via `ExternalACPConnection.session_update(...)`.
-- Over its lifetime, the mux may detach and reattach, thereby multiplexing multiple independent per-agent ACP sessions into one swarm-facing session stream.
-
-`SwarmACPMux` does not reimplement replay, overflow, or subscriber semantics; those are provided by `AcpSessionUpdateStream` and `subscribe_acp_updates()` (Epic 008).
-
-------------------------------------------------------------------------
-
-## Connection scope
-
-One `SwarmACPMux` instance should be created for each external ACP session.
-
-Its state is connection-local:
-
-```
-@dataclass(slots=True)
-class SwarmACPMux:
-    daemon: RuntimeDaemon
-    agent_client: SwarmAgentClient
-    external_connection: ExternalACPConnection
-    external_session_id: str
-
-    attached_agent_id: str | None = None
-    _forwarding_task: asyncio.Task[None] | None = None
-    _closed: bool = False
-```
-
-The mux owns:
-
-- the currently attached agent ID;
-- the forwarding task for that attachment;
-- the external ACP session ID;
-- connection-local closed/open state.
-
-The runtime services supplied to the mux retain ownership of swarm state, agent sessions, retained history, and subscriber queues.
-
-------------------------------------------------------------------------
-## Responsibilities and non-goals
-
-Epic 009 (SwarmACPMux) owns:
-
-- creating and managing one `SwarmACPMux` per external swarm ACP session;
-- subscribing to per-agent typed ACP update streams via `subscribe_acp_updates()`;
-- multiplexing those updates into a single swarm-facing session stream per external connection;
-- preserving required ordering guarantees at the swarm boundary (for example, attach acknowledgments before replay, and per-agent in-order delivery as provided by Epic 008);
-- coordinating attachment and detachment lifecycle for the external session;
-- routing swarm-level control operations to `RuntimeDaemon` (for status and detail) and to the attached agent (for prompt/interrupt);
-- exposing swarm-facing APIs used by the Swarm ACP server adapter.
-
-Epic 009 explicitly does **not** own:
-
-- ACP transport implementation or wire protocol details;
-- implementation of per-session `AcpSessionUpdateStream` or its buffering policies;
-- ACP replay, ordering, overflow, or closure semantics (these are specified in Epic 008);
-- low-level subscriber management for ACP streams.
-
-Those concerns are provided by the ACP integration layer and Epic 008; `SwarmACPMux` treats `subscribe_acp_updates()` as a stable, already-validated interface.
-
-------------------------------------------------------------------------
-
-
-## Interfaces
-
-### SwarmAgentClient
-
-The mux depends on the narrow, typed ACP interface it actually uses:
-
-```
 class SwarmAgentClient(Protocol):
     def subscribe_acp_updates(
         self,
         agent_id: str,
-    ) -> AbstractAsyncContextManager[AsyncIterator[ReceivedSessionUpdate]]:
-        “""Yield retained updates, followed by live updates.”""
+    ) -> AbstractAsyncContextManager[
+        AsyncIterator[ReceivedSessionUpdate]
+    ]:
+        “""Yield retained updates followed by live updates.”""
 
     async def prompt(
         self,
@@ -217,11 +132,9 @@ class SwarmAgentClient(Protocol):
         …
 ```
 
-`NateOhaAcpClient` implements this protocol by delegating to the per-session `AcpSessionUpdateStream` via its `subscribe_acp_updates()` method from Epic 008. The mux does not depend on how that stream is implemented; it treats `subscribe_acp_updates()` as the stable boundary for consuming typed ACP updates.
+`NateOhaAcpClient` implements this protocol.
 
-### ExternalACPConnection
-
-The outbound connection should accept the ACP session-update type expected by the outer server integration:
+### 5.2 ExternalACPConnection
 
 ```
 class ExternalACPConnection(Protocol):
@@ -234,214 +147,275 @@ class ExternalACPConnection(Protocol):
         …
 ```
 
-`SessionUpdate` represents the ACP SDK session-update union or the project's equivalent typed abstraction.
+The mux forwards `ReceivedSessionUpdate.update` unchanged.
 
-`SwarmACPMux` receives this type from `ReceivedSessionUpdate.update` values yielded by `subscribe_acp_updates()` (Epic 008) and forwards it directly. Any translation between ACP SDK types and the runtime's normalized `AgentEvent` telemetry remains the responsibility of the ACP integration and runtime event pipeline, not the mux.
+The runtime-only metadata on `ReceivedSessionUpdate`, including `sequence` and `received_at`, is not forwarded over ACP.
 
-Metadata on `ReceivedSessionUpdate` (for example `sequence` and `received_at`) are **not** forwarded over ACP. They are strictly runtime-internal diagnostics that may be used for logging, metrics, or to enrich `AgentEvent`-style observability, but the mux always forwards the underlying typed `SessionUpdate` object unchanged.
+### 5.3 RuntimeDaemon
 
+The daemon remains authoritative for swarm and agent state.
 
-------------------------------------------------------------------------
-
-## Constructor
+The mux depends on reusable daemon-level queries such as:
 
 ```
-def __init__(
+def get_swarm_status(self) -> dict[str, object]:
+    …
+
+def get_agent_detail(
     self,
+    agent_id: str,
     *,
-    daemon: RuntimeDaemon,
-    agent_client: SwarmAgentClient,
-    external_connection: ExternalACPConnection,
-    external_session_id: str,
-) -> None:
+    max_events: int = 100,
+) -> dict[str, object]:
     …
 ```
-
-Construction initializes connection-local state and stores the runtime services.
-
-The initial state is:
-
-```
-attached_agent_id = None
-_forwarding_task = None
-_closed = False
-```
-
-Agent attachment occurs explicitly through `attach()`.
 
 ------------------------------------------------------------------------
 
-## Public methods
+## 6. Connection-local state
 
-### attach
+The mux owns only state associated with one external connection:
 
 ```
-async def attach(self, agent_id: str) -> None:
+@dataclass(slots=True)
+class SwarmACPMux:
+    daemon: RuntimeDaemon
+    agent_client: SwarmAgentClient
+    external_connection: ExternalACPConnection
+    external_session_id: str
+
+    attached_agent_id: str | None = None
+
+    _attachment: _Attachment | None = None
+    _lifecycle_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock,
+        init=False,
+        repr=False,
+    )
+    _failure: asyncio.Future[None] = field(
+        init=False,
+        repr=False,
+    )
+    _closed: bool = field(
+        default=False,
+        init=False,
+        repr=False,
+    )
+```
+
+In `__post_init__`, `_failure` is initialized as a pending `asyncio.Future[None]` that is completed exactly once by `_report_failure()` on a fatal forwarding error or cancelled by `close()`. The `wait_failed()` method awaits this future.
+
+An internal attachment record retains the concrete subscription:
+
+```
+@dataclass(slots=True)
+class _Attachment:
+    agent_id: str
+    subscription: AbstractAsyncContextManager[
+        AsyncIterator[ReceivedSessionUpdate]
+    ]
+    updates: AsyncIterator[ReceivedSessionUpdate]
+    forwarding_enabled: asyncio.Event
+    task: asyncio.Task[None] | None = None
+```
+
+Retaining the entered subscription is important. A successful attachment must refer to one concrete ACP session and must not automatically follow a replacement session.
+
+------------------------------------------------------------------------
+
+## 7. Attachment transaction
+
+Attachment is a transaction with three distinct stages:
+
+```
+
+1. Establish the internal ACP subscription.
+2. Send the external attachment acknowledgment.
+3. Begin forwarding retained and live updates.
+
+```
+
+This ordering is required.
+
+A successful `_attach` acknowledgment must never be sent before the mux has successfully entered `subscribe_acp_updates()`.
+
+No retained or live update from the newly attached agent may be forwarded before the attachment acknowledgment has been written.
+
+The visible ordering is therefore:
+
+```
+previous attachment output
+_attach request
+_attach acknowledgment
+new attachment retained replay
+new attachment live output
+```
+
+When switching agents, the old forwarding task must be completely stopped before the new attachment is established.
+
+No old-agent update may be forwarded after the new-agent acknowledgment.
+
+------------------------------------------------------------------------
+
+## 8. Public API
+
+### 8.1 prepare_attach
+
+```
+async def prepare_attach(self, agent_id: str) -> PreparedAttachment:
     …
 ```
 
-Attaches the external ACP session to an existing swarm agent.
+`prepare_attach()` establishes the internal side of an attachment but does not begin forwarding.
 
 Behavior:
 
 1. verify that the mux is open;
 2. validate the agent against durable swarm membership;
-3. return immediately when the same healthy attachment already exists;
-4. detach the previous event subscription;
-5. establish a replay-capable subscription to the new agent;
-6. record the new attachment.
+3. serialize the lifecycle transition with `_lifecycle_lock`;
+4. return the existing attachment when the same healthy agent is already attached;
+5. completely detach the previous attachment;
+6. call `subscribe_acp_updates(agent_id)`;
+7. enter the returned async context manager;
+8. retain the concrete subscription and iterator;
+9. record the new attachment;
+10. return a handle representing the prepared attachment.
 
-Conceptually:
+If subscription establishment fails, the method raises and leaves the mux unattached.
 
-```
-async def attach(self, agent_id: str) -> None:
-    self._ensure_open()
-    self._require_known_agent(agent_id)
+In particular, `AgentSessionNotActive` must propagate as an attachment failure. The outer adapter must not send a success acknowledgment in that case.
 
-    if (
-        self.attached_agent_id == agent_id
-        and self._forwarding_task is not None
-        and not self._forwarding_task.done()
-    ):
-        return
-
-    await self.detach()
-
-    self.attached_agent_id = agent_id
-    self._forwarding_task = asyncio.create_task(
-        self._forward_session_updates(agent_id),
-        name=f"swarm-acp-mux:{agent_id}”,
-    )
-```
-
-The attachment acknowledgment returned by the outer ACP server should clearly identify the attached agent. This acknowledgment forms the visible boundary between events from the previous and new attachments.
-
-Switching agents is a supported operation.
-
-------------------------------------------------------------------------
-
-### detach
+A representative handle is:
 
 ```
-async def detach(self) -> None:
+@dataclass(frozen=True, slots=True)
+class PreparedAttachment:
+    agent_id: str
+    token: object
+```
+
+The token prevents a stale acknowledgment from activating an attachment that has already been replaced or detached.
+
+### 8.2 activate_attachment
+
+```
+async def activate_attachment(
+    self,
+    prepared: PreparedAttachment,
+) -> None:
     …
 ```
 
-Detaches the external ACP session from its current agent.
+The outer server adapter calls this only after successfully writing the `_attach` acknowledgment.
 
 Behavior:
 
-- clear the connection-local attachment;
-- cancel and await the forwarding task;
-- leave the agent process and ACP session running.
+1. verify that the mux remains open;
+2. verify that `prepared` still identifies the current attachment;
+3. start the forwarding task;
+4. release its forwarding gate.
+
+Calling this method with a stale or replaced handle must fail without activating anything.
+
+The normal adapter flow is:
+
+```
+prepared = await mux.prepare_attach(agent_id)
+
+await external_connection.send_attach_acknowledgment(
+    session_id=external_session_id,
+    agent_id=agent_id,
+)
+
+await mux.activate_attachment(prepared)
+```
+
+This split makes acknowledgment-before-replay an implementable guarantee rather than a scheduling assumption.
+
+### 8.3 attach
+
+A convenience `attach()` method may exist only when its caller supplies the acknowledgment operation:
+
+```
+async def attach(
+    self,
+    agent_id: str,
+    *,
+    acknowledge: Callable[[str], Awaitable[None]],
+) -> None:
+    prepared = await self.prepare_attach(agent_id)
+    await acknowledge(agent_id)
+    await self.activate_attachment(prepared)
+```
+
+There must not be a convenience method that launches forwarding before acknowledgment.
+
+### 8.4 detach
 
 ```
 async def detach(self) -> None:
-    task = self._forwarding_task
-
-    self._forwarding_task = None
-    self.attached_agent_id = None
-
-    if task is None:
-        return
-
-    task.cancel()
-
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    …
 ```
 
-Agent lifecycle remains under runtime ownership.
+Behavior:
 
-------------------------------------------------------------------------
+1. serialize the lifecycle transition;
+2. clear the active attachment;
+3. cancel and await the forwarding task;
+4. exit the retained subscription context manager;
+5. leave the underlying agent process and ACP session running.
 
-### prompt
+`detach()` is idempotent.
+
+Detaching the mux must remove only the mux's subscription. Other subscribers to the same `AcpSessionUpdateStream` remain active.
+
+### 8.5 prompt
 
 ```
 async def prompt(self, text: str) -> str | None:
     …
 ```
 
-Forwards an ordinary prompt to the attached agent:
+Behavior:
 
-```
-async def prompt(self, text: str) -> str | None:
-    self._ensure_open()
-    agent_id = self._require_attached_agent()
-    return await self.agent_client.prompt(agent_id, text)
-```
+- verify that the mux is open;
+- require an active attachment;
+- delegate to `agent_client.prompt(attached_agent_id, text)`.
 
-------------------------------------------------------------------------
+Calling `prompt()` without an attachment raises `NoAttachedAgentError`.
 
-### interrupt
+### 8.6 interrupt
 
 ```
 async def interrupt(self) -> None:
     …
 ```
 
-Forwards an interrupt to the attached agent:
+Behavior:
 
-```
-async def interrupt(self) -> None:
-    self._ensure_open()
-    agent_id = self._require_attached_agent()
-    await self.agent_client.interrupt(agent_id)
-```
+- verify that the mux is open;
+- require an active attachment;
+- delegate to `agent_client.interrupt(attached_agent_id)`.
 
-------------------------------------------------------------------------
+Calling `interrupt()` without an attachment raises `NoAttachedAgentError`.
 
-### get_swarm_status
+### 8.7 get_swarm_status
 
 ```
 def get_swarm_status(self) -> dict[str, object]:
     …
 ```
 
-Returns runtime-level swarm status plus connection-local attachment state.
-
-`RuntimeDaemon` should expose a reusable status API:
-
-```
-def get_swarm_status(self) -> dict[str, object]:
-    …
-```
-
-A representative daemon-level payload is:
+Returns daemon-owned swarm status together with connection-local attachment state:
 
 ```
 {
-  “swarm_id”: “swarm-123”,
-  “status”: “running”,
-  “agents”: [
-    {
-      “agent_id”: “agent-1”,
-      “display_name”: “Planner”,
-      “status”: “running”,
-      “conversation_id”: “conversation-1”,
-      “last_error”: null
-    }
-  ]
+    “attached_agent_id”: self.attached_agent_id,
+    “swarm”: self.daemon.get_swarm_status(),
 }
 ```
 
-The mux adds only connection-local information:
-
-```
-def get_swarm_status(self) -> dict[str, object]:
-    self._ensure_open()
-
-    return {
-        “attached_agent_id”: self.attached_agent_id,
-        “swarm”: self.daemon.get_swarm_status(),
-    }
-```
-
-------------------------------------------------------------------------
-
-### get_agent_detail
+### 8.8 get_agent_detail
 
 ```
 def get_agent_detail(
@@ -453,329 +427,180 @@ def get_agent_detail(
     …
 ```
 
-Returns the existing daemon-level agent detail plus mux-local attachment status:
+Returns daemon-owned agent detail together with whether that agent is attached to this mux:
 
 ```
-def get_agent_detail(
-    self,
-    agent_id: str,
-    *,
-    max_events: int = 100,
-) -> dict[str, object]:
-    self._ensure_open()
-    self._require_known_agent(agent_id)
-
-    return {
-        “attached”: agent_id == self.attached_agent_id,
-        “agent”: self.daemon.get_agent_detail(
-            agent_id=agent_id,
-            max_events=max_events,
-        ),
-    }
+{
+    “attached”: agent_id == self.attached_agent_id,
+    “agent”: self.daemon.get_agent_detail(
+        agent_id=agent_id,
+        max_events=max_events,
+    ),
+}
 ```
 
-The daemon remains the authoritative source for agent metadata and retained event history.
+### 8.9 wait_failed
 
-------------------------------------------------------------------------
+```
+async def wait_failed(self) -> None:
+    …
+```
 
-### close
+Waits until the mux encounters a fatal forwarding failure.
+
+This gives the outer connection handler an explicit way to observe errors from the forwarding task.
+
+A detached background task exception must not be treated as propagation.
+
+### 8.10 close
 
 ```
 async def close(self) -> None:
     …
 ```
 
-Closes the connection-scoped mux:
+Behavior:
 
-```
-async def close(self) -> None:
-    if self._closed:
-        return
+1. become closed exactly once;
+2. detach the current attachment;
+3. resolve or cancel internal waiters;
+4. reject subsequent operations with `SwarmACPMuxClosedError`.
 
-    self._closed = True
-    await self.detach()
-```
+`close()` is idempotent.
 
-The mux should support async context-manager use:
-
-```
-async def __aenter__(self) -> “SwarmACPMux”:
-    self._ensure_open()
-    return self
-
-async def __aexit__(
-    self,
-    exc_type,
-    exc,
-    traceback,
-) -> None:
-    await self.close()
-```
+The mux should support async context-manager use.
 
 ------------------------------------------------------------------------
 
-## Internal methods
+## 9. Forwarding task
 
-### \_forward_session_updates
+The forwarding task consumes the iterator that was already established by `prepare_attach()`.
 
-
-This coroutine implements the attached-agent output path over typed ACP updates.
-
-The subscription yields retained history first, then live updates as defined by Epic 008:
-
-```
-async def _forward_session_updates(self, agent_id: str) -> None:
-    current_task = asyncio.current_task()
-
-    try:
-        async with self.agent_client.subscribe_acp_updates(agent_id) as updates:
-            async for received in updates:
-                await self._forward_external_update(received)
-    finally:
-        if (
-            self.attached_agent_id == agent_id
-            and self._forwarding_task is current_task
-        ):
-            self.attached_agent_id = None
-            self._forwarding_task = None
-```
-
-When the per-agent update stream closes normally, the mux remains open and becomes unattached.
-
-A subsequent reserved `_attach` operation may attach it to another agent.
-
-An exception while writing to the external ACP connection should terminate this forwarding task and propagate to the outer connection handler. The outer handler then closes the connection-scoped mux and transport.
-
-------------------------------------------------------------------------
-
-### \_forward_external_update
-
-
-Forwards one typed ACP update to the external session:
-
-```
-async def _forward_external_update(
-    self,
-    received: ReceivedSessionUpdate,
-) -> None:
-    await self.external_connection.session_update(
-        session_id=self.external_session_id,
-        update=received.update,
-    )
-```
-
-`SwarmACPMux` does not inspect or transform the `SessionUpdate`; it simply forwards the typed value obtained from the underlying `ReceivedSessionUpdate` objects.
-
-The mux forwards the resulting update without interpreting ordinary agent output.
-
-------------------------------------------------------------------------
-
-### \_require_attached_agent
-
-```
-def _require_attached_agent(self) -> str:
-    if self.attached_agent_id is None:
-        raise NoAttachedAgentError(
-            “No agent is attached to this ACP connection"
-        )
-
-    return self.attached_agent_id
-```
-
-------------------------------------------------------------------------
-
-### \_require_known_agent
-
-```
-def _require_known_agent(self, agent_id: str) -> AgentState:
-    try:
-        return self.daemon.swarm_state.agents[agent_id]
-    except KeyError as exc:
-        raise UnknownAgentError(agent_id) from exc
-```
-
-Durable `SwarmState.agents` is the authority for swarm membership.
-
-------------------------------------------------------------------------
-
-### \_ensure_open
-
-```
-def _ensure_open(self) -> None:
-    if self._closed:
-        raise SwarmACPMuxClosedError()
-```
-
-------------------------------------------------------------------------
-
-## Reserved swarm-control protocol
-
-Reserved swarm-control operations are incoming ACP updates from the customized external client whose protocol-level `sessionUpdate` name begins with `_`.
-
-Examples:
-
-```
-_attach
-_detach
-_swarm_status
-_agent_detail
-```
-
-The outer swarm ACP server adapter owns detection and dispatch.
+It must not call `subscribe_acp_updates()` itself.
 
 Conceptually:
 
 ```
-async def handle_external_update(
-    mux: SwarmACPMux,
-    update: SessionUpdate,
-) -> None:
-    name = update.session_update
-
-    if name.startswith(“_”):
-        await dispatch_reserved_update(mux, update)
-        return
-
-    await proxy_ordinary_update(mux, update)
-```
-
-A representative dispatch table is:
-
-|                          |                                  |
-|--------------------------|----------------------------------|
-| Reserved `sessionUpdate` | Mux operation                    |
-| `_attach`                | `await mux.attach(agent_id)`     |
-| `_detach`                | `await mux.detach()`             |
-| `_swarm_status`          | `mux.get_swarm_status()`         |
-| `_agent_detail`          | `mux.get_agent_detail(agent_id)` |
-
-Unknown underscore-prefixed control updates produce a structured unsupported-operation error:
-
-```
-class UnsupportedReservedUpdateError(SwarmACPMuxError):
-    pass
-```
-
-The outer ACP server adapter converts domain errors into the appropriate ACP error response.
-
-### Agent-emitted custom updates
-
-An attached agent may also emit a custom underscore-prefixed ACP update.
-
-Such updates travel through the ordinary per-agent publication path:
-
-```
-agent
-    -> NateOhaAcpClient
-    -> retained event stream
-    -> all internal subscribers
-```
-
-Their visibility to the external client is defined separately by the swarm ACP protocol.
-
-The default mux behavior is transparent forwarding unless the protocol explicitly defines an agent-output filtering rule.
-
-This preserves one simple attached-agent forwarding path.
-
-------------------------------------------------------------------------
-
-## Replay-capable session update delivery (Epic 008 dependency)
-
-Attaching to an agent must produce one continuous, ordered stream of typed ACP session updates:
-
-1. retained per-session updates from the bounded history; then
-2. all subsequent live updates.
-
-`SwarmACPMux` consumes this via the typed subscription API:
-
-```
-async with self.agent_client.subscribe_acp_updates(agent_id) as updates:
-    async for received in updates:
-        …
-```
-
-The replay and delivery semantics are owned entirely by the Epic 008 `AcpSessionUpdateStream` layer and its `subscribe()` / `subscribe_acp_updates()` helpers. In particular, that layer:
-
-1. yields retained history followed by live updates on a single logical stream;
-2. ensures that an update published during subscription establishment is delivered exactly once;
-3. handles history truncation / overflow and backpressure, and multiplexes multiple subscribers.
-
-`SwarmACPMux` treats these semantics as a given. Its responsibility is limited to consuming `ReceivedSessionUpdate` values and forwarding the embedded `SessionUpdate` objects to the external ACP connection.
-
-------------------------------------------------------------------------
-
-## Upstream dependencies
-
-Epic 009 assumes several upstream capabilities that are primarily provided by Epic 008 and existing runtime components. This section summarizes those dependencies rather than re‑specifying their behavior.
-
-### AcpSessionUpdateStream (Epic 008)
-
-The runtime owns a per-agent, replay-capable stream of typed ACP session updates, implemented by `AcpSessionUpdateStream` (see `ACP_SESSION_UPDATE_STREAM.md`). For each agent/session, the stream:
-
-- stores a bounded history of `ReceivedSessionUpdate` values;
-- exposes a `subscribe()` async context manager that yields an `AsyncIterator[ReceivedSessionUpdate]`;
-- is responsible for replay ordering, overflow policy, and multi-subscriber fan-out.
-
-This stream is the single source of truth for `SessionUpdate` traffic inside the runtime.
-
-### NateOhaAcpClient
-
-`NateOhaAcpClient` bridges the ACP transport into the typed update stream. In particular it:
-
-- accepts raw ACP protocol messages from the server adapter;
-- converts them into typed `SessionUpdate` objects;
-- publishes them into the agent's `AcpSessionUpdateStream` instance;
-- exposes a mux-facing API:
-
-```
-def subscribe_acp_updates(
+async def _run_forwarding(
     self,
-    agent_id: str,
-) -> AbstractAsyncContextManager[AsyncIterator[ReceivedSessionUpdate]]:
-    …
+    attachment: _Attachment,
+) -> None:
+    try:
+        await attachment.forwarding_enabled.wait()
+
+        async for received in attachment.updates:
+            await self.external_connection.session_update(
+                session_id=self.external_session_id,
+                update=received.update,
+            )
+
+    except asyncio.CancelledError:
+        raise
+
+    except Exception as exc:
+        self._report_failure(exc)
+        raise
+
+    finally:
+        await self._attachment_finished(attachment)
 ```
 
-Other callers may use the same stream directly (for example via `iter_acp_updates()`), but `SwarmACPMux` only depends on `subscribe_acp_updates()`.
+When the underlying ACP stream closes normally:
 
-### RuntimeDaemon
+- the forwarding task terminates;
+- the mux remains open;
+- the mux becomes unattached;
+- the external session may later attach to another agent.
 
-Add or extend a helper:
+When forwarding to the external connection fails:
 
-```
-def get_swarm_status(self) -> dict[str, object]:
-    …
-```
-
-This method should serialize swarm-level runtime state once for reuse by:
-
-- `SwarmACPMux`;
-- CLI/status endpoints;
-- diagnostics;
-- future dashboards.
-
-### ACP telemetry representation
-
-The runtime's existing `AgentEvent` pipeline may continue to be used for logging and observability. When it projects ACP activity into events, it SHOULD:
-
-- retain or embed the corresponding `SessionUpdate` (for example on an `acp_update` field); or
-- capture enough normalized information to reconstruct the `SessionUpdate` if needed.
-
-This is an observability concern only. `SwarmACPMux` never takes `AgentEvent` as input and does not call any `require_session_update()` helper; its only source of truth for ACP traffic is the typed stream of `ReceivedSessionUpdate` values.
-
-### Swarm ACP server adapter
-
-Add or extend the external ACP server integration so it:
-
-- creates one `SwarmACPMux` per external session;
-- detects underscore-prefixed incoming `sessionUpdate` names;
-- dispatches reserved controls to mux methods;
-- proxies ordinary ACP requests through the mux;
-- translates mux domain errors into ACP errors;
-- closes the mux when the external connection ends.
+- the failure is recorded;
+- `wait_failed()` raises or completes exceptionally;
+- the outer connection handler closes the mux and external transport.
 
 ------------------------------------------------------------------------
 
-## Error model
+## 10. Structured connection lifetime
+
+The outer swarm ACP server adapter owns the external connection lifetime.
+
+It must run inbound request processing and mux failure monitoring under structured concurrency.
+
+Conceptually:
+
+```
+async with SwarmACPMux(…) as mux:
+    async with asyncio.TaskGroup() as tasks:
+        tasks.create_task(
+            serve_external_requests(mux),
+            name="swarm-acp-inbound”,
+        )
+        tasks.create_task(
+            mux.wait_failed(),
+            name="swarm-acp-forwarding-watch”,
+        )
+```
+
+If inbound processing fails, forwarding is cancelled.
+
+If outbound forwarding fails, inbound processing is cancelled.
+
+The adapter then closes the mux and external connection.
+
+This is the required meaning of “forwarding failures propagate to the outer connection handler.”
+
+------------------------------------------------------------------------
+
+## 11. Lifecycle serialization
+
+`prepare_attach()`, `activate_attachment()`, `detach()`, and `close()` mutate shared connection-local state.
+
+These transitions must be serialized by `_lifecycle_lock`.
+
+The implementation must behave deterministically when:
+
+- two attachments are requested concurrently;
+- detach races with attachment;
+- close races with attachment;
+- an old forwarding task finishes after a new attachment has been prepared.
+
+Completion of an old task must never clear or mutate a newer attachment.
+
+Identity must be checked using the concrete `_Attachment` object or its unique token, not only `agent_id`.
+
+------------------------------------------------------------------------
+
+## 12. Reserved swarm-control protocol
+
+Reserved swarm controls are incoming custom ACP updates whose protocol-level name begins with `_`.
+
+Initial operations:
+
+|                 |                                           |
+|-----------------|-------------------------------------------|
+| Reserved update | Mux operation                             |
+| `_attach`       | Prepare attachment, acknowledge, activate |
+| `_detach`       | `await mux.detach()`                      |
+| `_swarm_status` | `mux.get_swarm_status()`                  |
+| `_agent_detail` | `mux.get_agent_detail(agent_id)`          |
+
+The outer swarm ACP server adapter owns:
+
+- parsing reserved update payloads;
+- validating required arguments;
+- dispatching to mux methods;
+- writing success acknowledgments;
+- translating mux domain errors into ACP errors.
+
+The swarm ACP server adapter raises `UnsupportedReservedUpdateError` for unknown underscore-prefixed control operations.
+
+Reserved client-to-swarm controls must never be forwarded to an attached agent.
+
+An underscore-prefixed update emitted by an attached agent is ordinary agent output. It follows the typed ACP stream and is forwarded unchanged unless a later protocol specification defines an explicit filtering rule.
+
+------------------------------------------------------------------------
+
+## 13. Error model
 
 ```
 class SwarmACPMuxError(RuntimeError):
@@ -790,324 +615,225 @@ class UnknownAgentError(SwarmACPMuxError):
 class NoAttachedAgentError(SwarmACPMuxError):
     pass
 
+class StaleAttachmentError(SwarmACPMuxError):
+    pass
+
 class UnsupportedReservedUpdateError(SwarmACPMuxError):
     pass
 ```
 
-The mux raises domain errors.
+Primary use sites:
 
-The outer ACP server adapter maps them to protocol responses.
+- `SwarmACPMuxClosedError`: raised by public methods when `_closed` is `True`.
+- `UnknownAgentError`: raised by `prepare_attach()` and `get_agent_detail()` when the daemon has no such agent.
+- `NoAttachedAgentError`: raised by `prompt()` and `interrupt()` when there is no active attachment.
+- `StaleAttachmentError`: raised by `activate_attachment()` when a `PreparedAttachment` token no longer matches the current `_Attachment`.
+- `UnsupportedReservedUpdateError`: raised by the swarm ACP server adapter when it receives an unknown reserved control operation.
 
-External connection write failures propagate out of the forwarding task and terminate the connection-scoped mux.
+Errors from `subscribe_acp_updates()`, including `AgentSessionNotActive`, propagate through `prepare_attach()`.
 
-------------------------------------------------------------------------
+The outer adapter translates domain errors into protocol-level responses.
 
-## Logging
+External connection write errors are fatal to the external swarm ACP session.
 
-Log mux lifecycle and failure boundaries:
+-----------------------------------------------------------------------
+## 14. Internal lifecycle methods
 
-- mux creation;
-- attachment;
-- detachment;
-- normal agent-stream closure;
-- unexpected forwarding-task termination;
-- unsupported reserved update;
-- external write failure;
-- mux closure.
+### `_run_forwarding`
 
-Useful fields include:
+Waits for attachment activation, forwards retained and live typed ACP updates,
+reports fatal failures, and performs identity-safe attachment cleanup.
 
-```
-swarm_id
-external_session_id
-agent_id
-update_name
-event_id
-```
+Cancellation caused by `detach()` or `close()` is normal lifecycle behavior and
+MUST NOT be reported through `wait_failed()`.
 
-Ordinary forwarded events may remain at debug or trace level.
+### `_attachment_finished`
 
-------------------------------------------------------------------------
+Under `_lifecycle_lock`:
 
-## Minimal class outline
+1. verifies that the completed attachment is still current;
+2. clears `attached_agent_id` and `_attachment`;
+3. exits the retained subscription context manager exactly once.
 
-```
-from __future__ import annotations
+Completion of an obsolete attachment MUST NOT modify a newer attachment.
 
-import asyncio
-from collections.abc import AsyncIterator
-from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass, field
-from typing import Protocol
+### `_report_failure`
 
-from nate_ntm.runtime.daemon import RuntimeDaemon
-from nate_ntm.runtime.state import AgentState
-from nate_ntm.runtime.acp_types import SessionUpdate
-from nate_ntm.runtime.acp_update_stream import ReceivedSessionUpdate
+Records the first fatal forwarding failure only.
 
-class SwarmAgentClient(Protocol):
-    def subscribe_acp_updates(
-        self,
-        agent_id: str,
-    ) -> AbstractAsyncContextManager[AsyncIterator[ReceivedSessionUpdate]]:
-        """Yield retained updates, followed by live updates."""
+A fatal failure includes:
 
-    async def prompt(
-        self,
-        agent_id: str,
-        prompt: str,
-    ) -> str | None:
-        …
+- an exception raised while consuming the ACP subscription;
+- an exception writing an update to the external ACP connection.
 
-    async def interrupt(self, agent_id: str) -> None:
-        …
+Normal subscription exhaustion and task cancellation are not failures.
 
-class ExternalACPConnection(Protocol):
-    async def session_update(
-        self,
-        *,
-        session_id: str,
-        update: SessionUpdate,
-    ) -> None:
-        …
+### `wait_failed`
 
-@dataclass(slots=True)
-class SwarmACPMux:
-    daemon: RuntimeDaemon
-    agent_client: SwarmAgentClient
-    external_connection: ExternalACPConnection
-    external_session_id: str
+Waits for the first fatal forwarding failure and re-raises it.
 
-    attached_agent_id: str | None = None
-    _forwarding_task: asyncio.Task[None] | None = field(
-        default=None,
-        init=False,
-        repr=False,
-    )
-    _closed: bool = field(
-        default=False,
-        init=False,
-        repr=False,
-    )
+Clean mux closure cancels the pending failure waiter. Normal agent-stream
+closure leaves the mux open and unattached and does not complete the failure
+waiter.
 
-    async def attach(self, agent_id: str) -> None:
-        self._ensure_open()
-        self._require_known_agent(agent_id)
+## 15. Required invariants
 
-        if (
-            self.attached_agent_id == agent_id
-            and self._forwarding_task is not None
-            and not self._forwarding_task.done()
-        ):
-            return
+The implementation must preserve these invariants:
 
-        await self.detach()
-
-        self.attached_agent_id = agent_id
-        self._forwarding_task = asyncio.create_task(
-            self._forward_session_updates(agent_id),
-            name=f"swarm-acp-mux:{agent_id}”,
-        )
-
-    async def detach(self) -> None:
-        task = self._forwarding_task
-
-        self._forwarding_task = None
-        self.attached_agent_id = None
-
-        if task is None:
-            return
-
-        task.cancel()
-
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-    async def prompt(self, text: str) -> str | None:
-        self._ensure_open()
-        return await self.agent_client.prompt(
-            self._require_attached_agent(),
-            text,
-        )
-
-    async def interrupt(self) -> None:
-        self._ensure_open()
-        await self.agent_client.interrupt(
-            self._require_attached_agent()
-        )
-
-    def get_swarm_status(self) -> dict[str, object]:
-        self._ensure_open()
-
-        return {
-            “attached_agent_id”: self.attached_agent_id,
-            “swarm”: self.daemon.get_swarm_status(),
-        }
-
-    def get_agent_detail(
-        self,
-        agent_id: str,
-        *,
-        max_events: int = 100,
-    ) -> dict[str, object]:
-        self._ensure_open()
-        self._require_known_agent(agent_id)
-
-        return {
-            “attached”: agent_id == self.attached_agent_id,
-            “agent”: self.daemon.get_agent_detail(
-                agent_id=agent_id,
-                max_events=max_events,
-            ),
-        }
-
-    async def close(self) -> None:
-        if self._closed:
-            return
-
-        self._closed = True
-        await self.detach()
-
-    async def _forward_session_updates(self, agent_id: str) -> None:
-        current_task = asyncio.current_task()
-
-        try:
-            async with self.agent_client.subscribe_acp_updates(
-                agent_id
-            ) as updates:
-                async for received in updates:
-                    await self._forward_external_update(received)
-        finally:
-            if (
-                self.attached_agent_id == agent_id
-                and self._forwarding_task is current_task
-            ):
-                self.attached_agent_id = None
-                self._forwarding_task = None
-
-    async def _forward_external_update(
-        self,
-        received: ReceivedSessionUpdate,
-    ) -> None:
-        await self.external_connection.session_update(
-            session_id=self.external_session_id,
-            update=received.update,
-        )
-
-    def _require_attached_agent(self) -> str:
-        if self.attached_agent_id is None:
-            raise NoAttachedAgentError(
-                “No agent is attached to this ACP connection"
-            )
-
-        return self.attached_agent_id
-
-    def _require_known_agent(self, agent_id: str) -> AgentState:
-        try:
-            return self.daemon.swarm_state.agents[agent_id]
-        except KeyError as exc:
-            raise UnknownAgentError(agent_id) from exc
-
-    def _ensure_open(self) -> None:
-        if self._closed:
-            raise SwarmACPMuxClosedError()
-
-    async def __aenter__(self) -> “SwarmACPMux”:
-        self._ensure_open()
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type,
-        exc,
-        traceback,
-    ) -> None:
-        await self.close()
-```
+1. One mux exists per external ACP session.
+2. A mux is attached to at most one agent.
+3. A successful attachment refers to one concrete agent ACP session.
+4. A mux never follows automatically to a replacement ACP session.
+5. The internal subscription exists before attachment success is acknowledged.
+6. New-agent replay begins only after attachment acknowledgment.
+7. The old forwarding task has stopped before a new attachment is acknowledged.
+8. Per-agent ordering is preserved exactly as yielded by Epic 008.
+9. The mux forwards the underlying typed `SessionUpdate` unchanged.
+10. Detaching the mux does not stop the agent.
+11. Detaching the mux does not affect independent subscribers.
+12. Forwarding failures are observed by the outer connection handler.
+13. Lifecycle transitions are serialized.
+14. No second ACP buffer or subscription system exists.
 
 ------------------------------------------------------------------------
 
-## Tests
+## 16. Tests
 
-Tests should focus on complete routing and lifecycle behavior.
+Tests should focus on complete lifecycle and routing behavior rather than isolated implementation details.
 
-### Attachment and replay
+### 16.1 Attachment establishment
 
-- attaching subscribes to the selected agent;
-- retained events are forwarded before later live events;
-- an event published during attachment is delivered exactly once;
-- switching attachment cancels the old subscription and replays the new agent's retained stream;
-- the attachment acknowledgment identifies the new agent.
+- a known agent with an active ACP session can be prepared;
+- a durable agent without an active ACP session fails attachment;
+- no success acknowledgment is sent after subscription establishment fails;
+- the mux remains unattached after a failed preparation;
+- preparing an attachment enters exactly one ACP subscription.
 
-### Agent request forwarding
+### 16.2 Acknowledgment ordering
+
+- no retained update is forwarded before the `_attach` acknowledgment;
+- retained replay begins after successful activation;
+- live updates follow retained replay;
+- an update published during preparation is delivered exactly once;
+- acknowledgment failure prevents activation and cleans up the prepared subscription.
+
+### 16.3 Switching agents
+
+- switching completely stops the old forwarding task;
+- the old subscription is exited before the new attachment is acknowledged;
+- no old-agent update appears after the new-agent acknowledgment;
+- the new agent's retained updates replay before its live updates;
+- completion of the old task cannot clear the new attachment.
+
+### 16.4 Request forwarding
 
 - `prompt()` delegates to the attached agent;
 - `interrupt()` delegates to the attached agent;
-- either operation without an attachment raises `NoAttachedAgentError`.
+- both raise `NoAttachedAgentError` without an attachment.
 
-### External control routing
+### 16.5 Multiple subscribers
 
-Test the swarm ACP server adapter together with the mux:
+Using the real `AcpSessionUpdateStream`:
 
-- `_attach` calls `mux.attach(agent_id)`;
-- `_detach` calls `mux.detach()`;
-- `_swarm_status` returns `mux.get_swarm_status()`;
-- `_agent_detail` returns `mux.get_agent_detail(agent_id)`;
-- an unknown underscore-prefixed update returns a structured error;
-- reserved control updates are not proxied to `NateOhaAcpClient`.
+- the mux and an independent subscriber receive the same update;
+- both receive retained history followed by live updates;
+- detaching the mux leaves the independent subscriber active.
 
-### Multiple subscribers
+### 16.6 Lifecycle and concurrency
 
-Using the real event-stream implementation:
-
-- the mux and an independent subscriber receive the same agent event;
-- each receives retained history followed by live events;
-- detaching the mux leaves the independent subscription active.
-
-### Lifecycle
-
+- `detach()` is idempotent;
 - `close()` is idempotent;
-- detach removes only the mux subscription;
 - normal agent-stream closure leaves the mux open and unattached;
-- external write failure terminates the forwarding task;
-- operations after close raise `SwarmACPMuxClosedError`.
+- operations after close raise `SwarmACPMuxClosedError`;
+- simultaneous attach requests produce one deterministic final attachment;
+- detach racing with attach leaves valid state;
+- close racing with attach leaves the mux closed and unattached.
 
-### Macro integration test
+### 16.7 Failure propagation
 
-Add one real-path async integration test that:
+- an external write failure terminates forwarding;
+- `wait_failed()` exposes that failure;
+- the outer connection task group cancels inbound processing;
+- the mux and external transport are closed.
+
+### 16.8 Reserved controls
+
+- `_attach` is not forwarded to the agent;
+- `_detach` is not forwarded to the agent;
+- `_swarm_status` returns daemon-owned status;
+- `_agent_detail` returns daemon-owned detail;
+- unknown reserved operations return a structured error;
+- underscore-prefixed agent output is forwarded normally.
+
+### 16.9 Macro integration test
+
+Add one real-path asynchronous integration test that:
 
 1. starts a real agent;
-2. creates an external swarm ACP session and `SwarmACPMux`;
-3. sends external `_attach`;
-4. verifies that the mux attaches and the control update is not sent to the agent;
-5. confirms that retained ACP session updates for the attached agent are replayed in order;
+2. creates an external swarm ACP session and mux;
+3. sends `_attach`;
+4. confirms that the internal subscription is established before acknowledgment;
+5. confirms that retained output begins only after acknowledgment;
 6. sends an ordinary prompt;
-7. verifies that agent output reaches the external ACP connection;
-8. confirms that an independent subscriber also receives the agent output;
-9. sends external `_detach`;
-10. verifies that the mux becomes unattached while the agent remains running.
+7. verifies that typed agent output reaches the external connection;
+8. verifies that an independent subscriber receives the same output;
+9. switches to another agent and verifies the ordering boundary;
+10. sends `_detach`;
+11. verifies that the mux becomes unattached while both agents remain runtime-managed.
 
 ------------------------------------------------------------------------
 
-## Summary
+## 17. Non-goals
 
-`SwarmACPMux` is a small connection-scoped router with two clear paths:
+Epic 009 does not implement:
+
+- ACP transport framing;
+- `AcpSessionUpdateStream`;
+- replay-buffer policy;
+- subscriber overflow policy;
+- generic `AgentEvent` removal;
+- swarm-wide persistence of external attachment state;
+- automatic attachment migration when an agent session is replaced;
+- multiple simultaneous agent attachments for one external session.
+
+------------------------------------------------------------------------
+
+## 18. Summary
+
+`SwarmACPMux` is a connection-scoped router over the typed ACP update infrastructure from Epic 008.
+
+Its central lifecycle is:
 
 ```
-# External client -> swarm or attached agent
-if update.session_update.startswith(“_”):
-    await dispatch_reserved_update(mux, update)
-else:
-    await proxy_ordinary_request(mux, update)
-
-# Attached agent -> external client
-async with agent_client.subscribe_acp_updates(agent_id) as updates:
-    async for received in updates:
-        await mux._forward_external_update(received)
+prepare internal subscription
+    ↓
+send external attachment acknowledgment
+    ↓
+activate retained replay and live forwarding
 ```
 
-The runtime supplies replay-capable per-agent subscriptions. The outer ACP server supplies reserved-update decoding. The mux owns only attachment and routing.
+Its output path is:
 
-This yields one typed ACP update stream, one agent client, one mux implementation, and one authoritative place for each responsibility.
+```
+AcpAgentSession
+    ↓
+subscribe_acp_updates()
+    ↓
+SwarmACPMux
+    ↓
+ExternalACPConnection.session_update()
+```
+
+Its control path is:
+
+```
+external reserved control
+    ↓
+swarm ACP server adapter
+    ↓
+SwarmACPMux
+    ↓
+RuntimeDaemon or attached agent
+```
+
+This leaves one authoritative implementation for typed ACP delivery, one canonical subscription API, one mux implementation, and one clear owner for each lifecycle boundary.
