@@ -577,388 +577,115 @@ Those future changes should treat this epic's types and semantics as stable inpu
 
 ## 9. Repo-Specific Implementation Notes and File Checklist
 
-This section ties the abstract phases and invariants above to concrete files,
-types, and call sites in the current `nate-ntm` repo. It is **non-normative**:
-§§1–4 define the canonical types and behavior. If any example or description in
-this section ever conflicts with those sections, treat §§1–4 as authoritative.
-Its purpose is to give enough context that you can implement the refactor
-without re-reading other design docs.
+This section maps the normative design in §§1–4 onto the current `nate-ntm` repository.
 
-### 9.1 New types and stream primitives
+It is non-normative. Sections 1–4 define the required types, ownership rules, subscription contract, and externally observable behavior. This section identifies the files and call sites that must implement that contract without duplicating the production implementation.
 
-**`src/nate_ntm/runtime/acp_types.py`**
+### 9.1 Typed ACP update primitives
 
-Create a small module that owns the import of the real ACP `SessionUpdate` type:
+#### src/nate_ntm/runtime/acp_types.py
 
-```python
-# src/nate_ntm/runtime/acp_types.py
+This module owns the runtime's internal `SessionUpdate` type alias.
 
-from __future__ import annotations
+Responsibilities:
 
-"""ACP type aliases used by the runtime.
+- expose the narrowest authoritative ACP SDK type that covers `session/update` payloads;
+- isolate the ACP SDK import path;
+- prevent runtime modules from independently defining or importing competing update types;
+- contain no serialization, normalization, buffering, or delivery logic.
 
-This module isolates the concrete ACP SDK import paths so that the rest of the
-runtime can depend on a single, internal abstraction rather than importing
-from :mod:`acp` directly.
+Current expected shape:
 
-In particular, ``SessionUpdate`` represents the typed ACP models delivered to
-``Client.session_update`` callbacks. The exact type is provided by the ACP SDK
-and may evolve over time; this module SHOULD be kept in sync with the
-installed SDK version.
-"""
-
+```
 from acp import schema as acp_schema
 
-# NOTE:
-# -----
-# The ACP SDK used by this project does not currently expose a dedicated
-# ``SessionUpdate`` union type. Instead, individual update models such as
-# ``UserMessageChunk``, ``UsageUpdate``, and ``ToolCallStart`` all inherit
-# from ``acp.schema.BaseModel``.
-#
-# We therefore treat ``BaseModel`` as the common supertype for all
-# ``session/update`` payload models. This keeps the runtime strongly typed
-# against ACP SDK models (rather than ``Any``) while remaining forward
-# compatible with additional update variants.
 SessionUpdate = acp_schema.BaseModel
 
-__all__ = ["SessionUpdate"]
+__all__ = ["SessionUpdate”]
 ```
 
-If a future ACP SDK release introduces a dedicated ``SessionUpdate`` union
-(or moves the base model), update this module to re-export that precise union
-or base type. All other runtime code should continue to import
-``SessionUpdate`` from :mod:`nate_ntm.runtime.acp_types` rather than reaching
-into the ACP SDK directly.
+`acp_schema.BaseModel` is a pragmatic upper bound because the currently installed ACP SDK does not expose a narrower common `SessionUpdate` union or base class. If the SDK introduces one, this alias must be updated to use it.
 
-**`src/nate_ntm/runtime/acp_update_stream.py`**
+#### src/nate_ntm/runtime/acp_update_stream.py
 
-Sections 1–4 define the required externally observable behavior for
-`AcpSessionUpdateStream` and `ReceivedSessionUpdate` (types, sequence and
-replay invariants, overflow semantics, closure behavior, and the
-`subscribe_acp_updates()` adapter API).
+This module owns the typed, per-session ACP update stream.
 
-Section 9 is **non-normative**: it provides a reference implementation that
-illustrates one concrete way to satisfy those requirements in this repository.
-Other implementations MAY differ internally as long as they satisfy the same
-external behavior.
+It must define:
 
-Define the typed receipt record and the per-session stream implementation:
-
-```python
-# src/nate_ntm/runtime/acp_update_stream.py
-
-from __future__ import annotations
-
-import asyncio
-from collections import deque
-from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import AsyncIterator, Deque, List, Set
-
-from .acp_types import SessionUpdate
-
-
+```
 @dataclass(frozen=True, slots=True)
 class ReceivedSessionUpdate:
-    """Receipt record for a single ACP ``SessionUpdate``.
-
-    Attributes
-    ----------
-    sequence:
-        1-based, monotonically increasing sequence number local to a single
-        concrete ACP session.
-
-    received_at:
-        Timestamp indicating when the runtime observed this update.
-
-    update:
-        The exact typed ACP ``SessionUpdate`` model instance delivered by the
-        SDK.
-    """
-
     sequence: int
     received_at: datetime
     update: SessionUpdate
-
-
-class AcpUpdateStreamError(RuntimeError):
-    """Base error type for session update stream failures."""
-
-
-class StreamClosedError(AcpUpdateStreamError):
-    """Raised when publishing to or subscribing from a closed stream."""
-
-
-class SubscriberOverflowError(AcpUpdateStreamError):
-    """Raised when a subscriber's live queue exceeds its capacity."""
-
-
-class AgentSessionNotActive(AcpUpdateStreamError):
-    """Raised when attempting to attach to a non-existent ACP session."""
-
-
-@dataclass(slots=True)
-class AcpSessionUpdateStream:
-    """Replay-capable, per-session stream of :class:`ReceivedSessionUpdate`.
-
-    This stream is intended to be owned by exactly one concrete ACP session.
-
-    Properties:
-    - Maintains a bounded retained history of updates (oldest entries are
-      dropped when the limit is exceeded).
-    - Assigns monotonically increasing sequence numbers starting at 1.
-    - Exposes an async subscription API that first replays retained history
-      and then yields live updates until the stream is closed.
-
-    Live delivery uses **bounded per-subscriber queues** so that slow
-    consumers cannot cause unbounded memory growth. When a subscriber's
-    queue overflows, that subscriber is terminated with
-    :class:`SubscriberOverflowError` rather than silently dropping ACP
-    updates.
-
-    The retained-history size (``max_events``) and the per-subscriber
-    live-queue capacity (``subscriber_queue_size``) are configurable
-    independently, although the defaults keep them aligned.
-    """
-
-    max_events: int = 200
-    subscriber_queue_size: int | None = None
-
-    _events: Deque[ReceivedSessionUpdate] = field(default_factory=deque, init=False, repr=False)
-    _next_sequence: int = field(default=1, init=False, repr=False)
-    _closed: bool = field(default=False, init=False, repr=False)
-    _close_error: BaseException | None = field(default=None, init=False, repr=False)
-    _closed_event: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False)
-
-    # Per-subscriber live queues. Each queue receives new updates published
-    # after the subscriber attaches. Subscribers always see a full replay of
-    # the retained history first.
-    _subscribers: Set[asyncio.Queue[object]] = field(default_factory=set, init=False, repr=False)
-
-    def publish(self, update: SessionUpdate, *, received_at: datetime) -> ReceivedSessionUpdate:
-        """Publish ``update`` into this session's stream.
-
-        Returns the corresponding :class:`ReceivedSessionUpdate` instance.
-        """
-
-        if self._closed:
-            raise StreamClosedError("cannot publish to closed AcpSessionUpdateStream")
-
-        event = ReceivedSessionUpdate(
-            sequence=self._next_sequence,
-            received_at=received_at,
-            update=update,
-        )
-        self._next_sequence += 1
-
-        # Append to bounded retained history (drop oldest when full).
-        self._events.append(event)
-        if self.max_events > 0 and len(self._events) > self.max_events:
-            # Drop oldest entries until within bound.
-            while len(self._events) > self.max_events:
-                self._events.popleft()
-
-        # Fan out to subscribers using bounded per-subscriber queues. When a
-        # subscriber queue overflows, poison that subscriber with a
-        # :class:`SubscriberOverflowError` so the iterator terminates with an
-        # explicit error instead of silently dropping updates.
-        dead: list[asyncio.Queue[object]] = []
-        for queue in list(self._subscribers):
-            try:
-                queue.put_nowait(event)
-            except asyncio.QueueFull:
-                # Clear any pending items for this subscriber and enqueue an
-                # overflow sentinel so that the consumer observes a terminal
-                # error on the next read.
-                while not queue.empty():
-                    try:
-                        queue.get_nowait()
-                    except asyncio.QueueEmpty:  # pragma: no cover - defensive
-                        break
-
-                try:
-                    queue.put_nowait(
-                        SubscriberOverflowError(
-                            "subscriber queue overflow in AcpSessionUpdateStream"
-                        )
-                    )
-                except asyncio.QueueFull:  # pragma: no cover - defensive
-                    # The queue was just drained, so this should not occur. If it
-                    # does, drop the subscriber and continue.
-                    pass
-
-                dead.append(queue)
-
-        for queue in dead:
-            self._subscribers.discard(queue)
-
-        return event
-
-    @asynccontextmanager
-    async def subscribe(self) -> AsyncIterator[AsyncIterator[ReceivedSessionUpdate]]:
-        """Subscribe to this stream.
-
-        The returned async iterator will:
-        - yield a snapshot of retained history as of subscription time;
-        - then yield live updates until the stream is closed.
-        """
-
-        # Snapshot retained history at subscription time.
-        snapshot: List[ReceivedSessionUpdate] = list(self._events)
-
-        # If already closed, we still replay the retained history, but there
-        # will be no live updates.
-        if self._closed:
-            live_queue: asyncio.Queue[object] | None = None
-        else:
-            # Determine the per-subscriber queue capacity. When an explicit
-            # ``subscriber_queue_size`` is provided and is positive, it is used
-            # directly. Otherwise, fall back to ``max_events`` and ensure a
-            # minimum capacity of 1 so queues are always bounded.
-            if self.subscriber_queue_size is not None and self.subscriber_queue_size > 0:
-                maxsize = self.subscriber_queue_size
-            elif self.max_events > 0:
-                maxsize = self.max_events
-            else:
-                maxsize = 1
-
-            live_queue = asyncio.Queue[object](maxsize=maxsize)
-            self._subscribers.add(live_queue)
-
-        async def _iterator() -> AsyncIterator[ReceivedSessionUpdate]:
-            # First, drain the immutable snapshot.
-            for ev in snapshot:
-                yield ev
-
-            # Then, if still live, consume the live queue.
-            if live_queue is None:
-                return
-
-            try:
-                while True:
-                    # If there is a pending item, consume it without blocking.
-                    if not live_queue.empty():
-                        item = live_queue.get_nowait()
-                        if isinstance(item, BaseException):
-                            raise item
-                        assert isinstance(item, ReceivedSessionUpdate)
-                        yield item
-                        continue
-
-                    # No pending items. If the stream has been closed and
-                    # there is nothing left to read, terminate the iterator
-                    # so callers observe a natural end-of-stream signal.
-                    if self._closed:
-                        break
-
-                    # Wait for either a new item or a stream-level close
-                    # signal so that subscribers blocked in ``anext`` are
-                    # promptly awakened when :meth:`close` is called.
-                    get_task = asyncio.create_task(live_queue.get())
-                    close_task = asyncio.create_task(self._closed_event.wait())
-
-                    done, pending = await asyncio.wait(
-                        {get_task, close_task},
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-
-                    if get_task in done:
-                        close_task.cancel()
-                        with suppress(asyncio.CancelledError):
-                            await close_task
-
-                        item = get_task.result()
-                        if isinstance(item, BaseException):
-                            raise item
-                        assert isinstance(item, ReceivedSessionUpdate)
-                        yield item
-                    else:
-                        # ``close_task`` completed first: cancel the pending
-                        # ``get_task`` and, if the stream is now closed and the
-                        # queue is still empty, terminate. If new items were
-                        # enqueued concurrently with ``close``, the loop will
-                        # pick them up on the next iteration.
-                        get_task.cancel()
-                        with suppress(asyncio.CancelledError):
-                            await get_task
-
-                        if self._closed and live_queue.empty():
-                            break
-            finally:
-                # Iterator-local cleanup is handled via ``aclose`` in the
-                # surrounding context manager; no additional logic is required
-                # here beyond normal loop termination.
-                pass
-
-        iterator = _iterator()
-        try:
-            yield iterator
-        finally:
-            # Ensure the subscriber is deterministically removed when the
-            # subscription context exits, even if the iterator is never
-            # consumed or exhausted.
-            if live_queue is not None:
-                self._subscribers.discard(live_queue)
-
-            # Proactively close the async generator so that any internal
-            # cleanup (e.g. cancellation of pending tasks) runs promptly.
-            with suppress(Exception):
-                await iterator.aclose()
-
-    def close(self, error: BaseException | None = None) -> None:
-        """Mark the stream as closed.
-
-        After calling this method, further publishes will raise
-        :class:`StreamClosedError`. Existing subscribers will be **actively
-        unblocked** if they are currently waiting for the next update; they
-        will first drain any already-queued items and then observe a natural
-        end-of-stream signal. New subscribers will receive only the retained
-        snapshot and then terminate.
-
-        When ``error`` is provided, it is recorded for diagnostics and may
-        be surfaced by higher-level components if needed.
-        """
-
-        if self._closed:
-            return
-
-        self._closed = True
-        if error is not None and self._close_error is None:
-            self._close_error = error
-
-        # Wake any subscribers currently blocked in ``anext`` by signalling
-        # the shared closed event; their iterators will terminate once any
-        # queued items have been drained.
-        self._closed_event.set()
 ```
 
-This is intentionally high-level pseudo-code with concrete method names, types, and behavior. When implementing, you should enforce:
+```
+class AcpUpdateStreamError(RuntimeError):
+    …
+```
 
-- No silent loss of ACP updates.
-- Explicit `SubscriberOverflowError` surfaced to the subscriber when its queue overflows (for example, by enqueuing a terminal exception sentinel as in the current implementation).
-- Persistent closed state and deterministic behavior for publish/subscribe-after-close.
+```
+class StreamClosedError(AcpUpdateStreamError):
+    “""Raised when publishing to a closed stream.”""
+```
 
-**Suggested focused unit tests:** `tests/unit/runtime/test_acp_update_stream.py`.
+```
+class SubscriberOverflowError(AcpUpdateStreamError):
+    “""Raised when a subscriber's live queue exceeds its capacity.”""
+```
 
-- Validate replay+live ordering.
-- Validate overflow behavior (using artificially tiny `max_events`).
-- Validate close semantics and subscribe-after-close semantics.
+```
+class AgentSessionNotActive(AcpUpdateStreamError):
+    “""Raised when an active ACP session cannot be resolved for attachment.”""
+```
 
-### 9.2 Where to attach the stream on AcpAgentSession
+```
+class AcpSessionUpdateStream:
+    def publish(
+        self,
+        update: SessionUpdate,
+        *,
+        received_at: datetime,
+    ) -> ReceivedSessionUpdate:
+        …
 
-**File:** `src/nate_ntm/runtime/acp_client.py`
+    @asynccontextmanager
+    async def subscribe(
+        self,
+    ) -> AsyncIterator[AsyncIterator[ReceivedSessionUpdate]]:
+        …
 
-`AcpAgentSession` is the concrete per-agent ACP session record. Enrich it with a required typed stream:
+    def close(
+        self,
+        error: BaseException | None = None,
+    ) -> None:
+        …
+```
 
-```python
-# src/nate_ntm/runtime/acp_client.py
+The implementation must satisfy the invariants in §§3.3–3.7:
 
-from dataclasses import dataclass
-from nate_ntm.runtime.acp_update_stream import AcpSessionUpdateStream
+- one monotonically increasing sequence space per stream;
+- bounded retained history;
+- an atomic replay/live boundary;
+- one bounded live queue per subscriber;
+- explicit subscriber-local overflow failure;
+- no silent update loss;
+- persistent and idempotent closure;
+- replay-after-close followed by natural termination;
+- deterministic subscriber cleanup.
 
+The module description should characterize the stream as the canonical typed, per-session ACP update path. It must not claim that Epic 008 removes the complete generic `AgentEvent` telemetry system or that a mux already consumes the stream.
 
+### 9.2 Attach the stream to AcpAgentSession
+
+#### src/nate_ntm/runtime/acp_client.py
+
+`AcpAgentSession` owns the update stream for one concrete ACP session.
+
+Expected shape:
+
+```
 @dataclass(slots=True)
 class AcpAgentSession:
     agent_id: str
@@ -966,200 +693,199 @@ class AcpAgentSession:
     process: subprocess.Popen[bytes] | None
     connection: BaseAcpConnection
     protocol_client: NateNtmAcpProtocolClient
-    status: str = "starting"
+    update_stream: AcpSessionUpdateStream = field(
+        default_factory=AcpSessionUpdateStream
+    )
+    status: str = “starting"
     stderr_task: asyncio.Task[None] | None = None
     exit_monitor_task: asyncio.Task[None] | None = None
-
-    # New: one update stream per concrete session.
-    update_stream: AcpSessionUpdateStream = field(default_factory=AcpSessionUpdateStream)
 ```
 
-Ensure that all session-creation paths (e.g. inside `BaseAcpClient` or its concrete subclasses) construct `AcpAgentSession` without overriding `update_stream`:
+Every session-creation path must allocate a fresh stream.
 
-```python
-session = AcpAgentSession(
-    agent_id=agent_id,
-    conversation_id=conversation_id,
-    process=process,
-    connection=connection,
-    protocol_client=protocol_client,
-)
+Every stop, failure, or replacement path must:
+
+1. retain the concrete session being terminated;
+2. close that session's update stream;
+3. release the ACP connection and process resources;
+4. remove or replace the session record.
+
+The stream must not be stored on `AgentRuntimeState` or shared by multiple `AcpAgentSession` instances.
+
+### 9.3 Publish ACP callbacks into the owning session stream
+
+#### src/nate_ntm/runtime/acp_protocol_client.py
+
+`NateNtmAcpProtocolClient.session_update()` receives the typed callback from the ACP SDK.
+
+Define one sink contract:
+
+```
+SessionUpdateSink = Callable[
+    [str, str, SessionUpdate, datetime],
+    None,
+]
 ```
 
-On session shutdown, failure, or replacement, explicitly close the stream before discarding the session:
+The callback must forward:
 
-```python
-session.update_stream.close(error=maybe_exception)
+- the logical agent identifier;
+- the concrete ACP session identifier;
+- the exact `SessionUpdate` object;
+- the receipt timestamp.
+
+It must not:
+
+- serialize or normalize the update;
+- construct a generic event envelope;
+- infer a string event type;
+- assign the stream sequence number.
+
+#### src/nate_ntm/runtime/acp_client.py
+
+`BaseAcpClient` must provide one publication handler:
+
+```
+def _on_session_update(
+    self,
+    agent_id: str,
+    session_id: str,
+    update: SessionUpdate,
+    received_at: datetime,
+) -> None:
+    …
 ```
 
-The runtime should not keep this stream on `AgentRuntimeState`; it is scoped to the concrete ACP session, not to the logical agent.
+That handler must:
 
-### 9.3 Protocol client callback wiring
+1. resolve the current `AcpAgentSession` for `agent_id`;
+2. reject the callback if no active session can be resolved;
+3. verify that the callback belongs to that concrete session;
+4. reject or log callbacks from replaced sessions;
+5. publish the exact update into `session.update_stream`.
 
-**Files:**
+The stream, not the protocol client or handler, assigns the canonical sequence number.
 
-- `src/nate_ntm/runtime/acp_protocol_client.py`
-- `src/nate_ntm/runtime/acp_connection.py`
+There must be one ACP publication path:
 
-`NateNtmAcpProtocolClient` receives `session_update` callbacks from the ACP SDK.
-Wire those callbacks into the owning `BaseAcpClient` via a typed sink that
-forwards real `SessionUpdate` values into the owning `AcpAgentSession`'s
-`AcpSessionUpdateStream`.
-
-**Define a sink type alias:**
-
-```python
-# src/nate_ntm/runtime/acp_protocol_client.py
-
-from datetime import datetime
-from typing import Callable
-
-from nate_ntm.runtime.acp_types import SessionUpdate
-
-SessionUpdateSink = Callable[[str, str, SessionUpdate, datetime], None]
+```
+NateNtmAcpProtocolClient.session_update()
+        ↓
+BaseAcpClient._on_session_update()
+        ↓
+AcpAgentSession.update_stream.publish()
 ```
 
-**Update the protocol client:**
+No second ACP buffer, subscriber registry, or publication path may remain.
 
-```python
-class NateNtmAcpProtocolClient(...):
-    def __init__(
-        self,
-        agent_id: str,
-        event_sink: SessionUpdateSink,
-        clock: Callable[[], datetime] | None = None,
-        ...,
-    ) -> None:
-        self._agent_id = agent_id
-        self._event_sink = event_sink
-        self._clock = clock or datetime.utcnow
+### 9.4 Expose the canonical subscription API
 
-    async def session_update(self, session_id: str, update: SessionUpdate, **_: object) -> None:
-        # Forward the typed update into the sink; higher layers own publishing
-        # into the session's AcpSessionUpdateStream.
-        received_at = self._clock()
-        self._event_sink(self._agent_id, session_id, update, received_at)
+#### src/nate_ntm/runtime/acp_client.py
+
+Implement the API defined in §4.3:
+
+```
+@asynccontextmanager
+async def subscribe_acp_updates(
+    self,
+    agent_id: str,
+) -> AsyncIterator[AsyncIterator[ReceivedSessionUpdate]]:
+    …
 ```
 
-**In the ACP client (`acp_client.py`), provide the sink implementation:**
+The implementation must:
 
-```python
-from nate_ntm.runtime.acp_update_stream import (
-    AcpSessionUpdateStream,
-    AgentSessionNotActive,
-    ReceivedSessionUpdate,
-    StreamClosedError,
-)
-from nate_ntm.runtime.acp_types import SessionUpdate
+1. resolve the current session exactly once;
+2. accept only sessions whose status is `"starting"` or `"running"`;
+3. raise `AgentSessionNotActive` for missing or inactive sessions;
+4. capture the concrete session;
+5. delegate to `session.update_stream.subscribe()`;
+6. remain attached to that session until its stream terminates;
+7. never follow automatically to a replacement session.
 
+Subscribing to an already-closed captured stream is valid. The subscriber receives its final retained snapshot and then terminates naturally.
 
-class BaseAcpClient:
-    ...
+All ACP-aware consumers must enter through `subscribe_acp_updates()`.
 
-    def _on_session_update(
-        self,
-        agent_id: str,
-        session_id: str,
-        update: SessionUpdate,
-        received_at: datetime,
-    ) -> None:
-        """Internal hook for typed ACP ``session/update`` notifications.
+A transitional compatibility adapter may consume this API and translate updates outward for an existing non-ACP telemetry consumer. Such an adapter must not introduce:
 
-        This method is wired into :class:`NateNtmAcpProtocolClient` and is
-        responsible for forwarding each typed :class:`SessionUpdate` into the
-        owning :class:`AcpAgentSession`'s :class:`AcpSessionUpdateStream`.
+- another ACP source;
+- another subscriber registry;
+- another replay buffer;
+- another overflow policy;
+- another ACP subscription API;
+- independent delivery semantics.
 
-        It SHOULD NOT drop updates silently and SHOULD avoid mutating
-        :class:`SessionUpdate` instances; callers can rely on a faithful,
-        ordered view of each session's ACP updates.
-        """
+Legacy ACP-specific helpers such as `subscribe_events()`, `iter_events()`, or `wait_for_event()` must either be removed or reduced to thin delegation without their own buffering or subscription machinery.
 
-        session = self._sessions.get(agent_id)
-        if session is None:
-            # Agent has no active session in this adapter.
-            raise AgentSessionNotActive(
-                f"Received ACP session update for inactive agent {agent_id!r}"
-            )
+### 9.5 Connection wiring
 
-        bound_session_id = (session.conversation_id or "").strip()
-        if bound_session_id and bound_session_id != session_id:
-            # Stale callback for a replaced session; log and drop.
-            logger.warning(
-                "acp_session_update_for_stale_session",
-                extra={
-                    "agent_id": agent_id,
-                    "expected_session_id": bound_session_id,
-                    "actual_session_id": session_id,
-                },
-            )
-            return
+#### src/nate_ntm/runtime/acp_connection.py
 
-        try:
-            receipt = session.update_stream.publish(update, received_at=received_at)
-        except StreamClosedError:
-            # The stream has already been closed, typically because the session
-            # is shutting down. Treat this as benign but log at debug level for
-            # diagnostics.
-            logger.debug(
-                "acp_update_after_stream_closed",
-                extra={"agent_id": agent_id, "session_id": session_id},
-            )
-            return
-        except Exception as exc:  # pragma: no cover - defensive
-            # Any unexpected failure when publishing to the stream is treated
-            # as terminal for that stream so that subscribers observe a
-            # consistent closure signal.
-            session.update_stream.close(exc)
-            logger.error(
-                "acp_update_stream_publish_error",
-                extra={"agent_id": agent_id, "session_id": session_id},
-            )
-            raise
+Wherever `NateNtmAcpProtocolClient` is constructed, pass the owning client's `_on_session_update` method as the `SessionUpdateSink`.
+
+The connection layer must not independently retain, translate, or fan out ACP updates.
+
+Its responsibility ends after wiring the SDK callback to the runtime publication handler.
+
+### 9.6 Validation checklist
+
+The implementation is complete when the following focused tests pass.
+
+#### Stream contract
+
+- retained updates replay in sequence order;
+- live updates follow retained history without gaps or duplicates;
+- sequence numbers begin at 1 and are local to one stream;
+- multiple subscribers receive independent ordered views.
+
+#### Replay/live boundary
+
+- publication racing with subscription produces one contiguous sequence;
+- no update appears in both replay and live delivery;
+- no update disappears at the registration boundary.
+
+#### Overflow and closure
+
+- a slow subscriber receives `SubscriberOverflowError`;
+- overflow affects only that subscriber;
+- another subscriber continues normally;
+- publishing after closure raises `StreamClosedError`;
+- subscribers already attached drain queued updates and terminate;
+- subscribers attaching after closure replay retained history and terminate;
+- cancellation unregisters the subscriber.
+
+#### Adapter integration
+
+- `subscribe_acp_updates()` raises `AgentSessionNotActive` for missing sessions;
+- it raises the same error for inactive sessions;
+- it binds to one concrete session;
+- it does not follow a replacement session;
+- ACP SDK callbacks reach the owning session stream exactly once;
+- stale callbacks do not enter a replacement session's stream.
+
+Use real representative ACP SDK update models rather than generic dictionaries or mocks of the stream contract.
+
+### 9.7 File checklist
+
+Primary implementation files:
+
+```
+src/nate_ntm/runtime/acp_types.py
+src/nate_ntm/runtime/acp_update_stream.py
+src/nate_ntm/runtime/acp_client.py
+src/nate_ntm/runtime/acp_protocol_client.py
+src/nate_ntm/runtime/acp_connection.py
 ```
 
-Then, when constructing `NateNtmAcpProtocolClient` in `acp_connection.py` or within `BaseAcpClient` startup code, pass the bound `_on_session_update` method as `event_sink`.
+Primary tests:
 
-### 9.4 Replacing the subscription API
-
-**File:** `src/nate_ntm/runtime/acp_client.py`
-
-The legacy ACP **subscription** helpers (`subscribe_events`, `iter_events`, `wait_for_event`, and any per-agent ACP event queues carried over from earlier designs) should migrate to a single typed subscription path built on `AcpSessionUpdateStream`. Runtime lifecycle producers such as `BaseAcpClient.on_event` and `_emit_event` remain available for non-ACP telemetry.
-
-Suggested implementation (non-normative; see §4.3 for the canonical contract):
-
-```python
-from contextlib import asynccontextmanager
-from typing import AsyncIterator
-
-from nate_ntm.runtime.acp_update_stream import (
-    AcpSessionUpdateStream,
-    AgentSessionNotActive,
-    ReceivedSessionUpdate,
-)
-
-
-class BaseAcpClient:
-    ...
-
-    @asynccontextmanager
-    async def subscribe_acp_updates(
-        self,
-        agent_id: str,
-    ) -> AsyncIterator[AsyncIterator[ReceivedSessionUpdate]]:
-        """Subscribe to the typed ACP update stream for ``agent_id``.
-
-        For full contract details (including error semantics for inactive
-        sessions), see §4.3.
-        """
-
-        session = self._sessions.get(agent_id)
-        if session is None or session.status not in {"starting", "running"}:
-            raise AgentSessionNotActive(f"No active ACP session for agent {agent_id!r}")
-
-        stream = session.update_stream
-        async with stream.subscribe() as updates:
-            yield updates
+```
+tests/unit/runtime/test_acp_update_stream.py
+tests/unit/runtime/test_acp_client_subscriptions.py
+tests/integration/runtime_acp/test_runtime_daemon_acp_async_real_path_epic005.py
 ```
 
-Update tests that consume ACP session updates to use this API instead of the old `subscribe_events`/`iter_events` helpers. Future SwarmACPMux implementations should also attach via `subscribe_acp_updates()`.
+Additional files should change only where they directly construct an `AcpAgentSession`, receive ACP `session/update` callbacks, or consume ACP updates.
 
+Do not add a generalized event bus, a second stream implementation, or mux behavior in this epic.
