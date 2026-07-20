@@ -1,335 +1,451 @@
 ---
-description: "Implementation tasks for Feature 009: SwarmACPMux"
+description: “Implementation tasks for Feature 009: SwarmACPMux"
 ---
 
 # Tasks: SwarmACPMux (Epic 009)
 
-**Input**: Design documents from `/specs/009-swarm-acp-mux/`
+**Input**: Design documents in `specs/009-swarm-acp-mux/`
 
-**Prerequisites**: `plan.md` (required), `spec.md` (normative), `research.md`, `data-model.md`, `contracts/swarm-acp-mux-session.md`, `quickstart.md`
+**Prerequisites**:
 
-**Tests**: This feature includes targeted unit and integration tests, as explicitly requested in `spec.md` 
-§16 and `quickstart.md`.
+- `specs/009-swarm-acp-mux/spec.md` — normative behavior
+- `specs/009-swarm-acp-mux/plan.md`
+- `specs/009-swarm-acp-mux/research.md`
+- `specs/009-swarm-acp-mux/data-model.md`
+- `specs/009-swarm-acp-mux/contracts/swarm-acp-mux-session.md`
+- `specs/009-swarm-acp-mux/quickstart.md`
 
-**Organization**: Tasks are grouped by user-story-like phases so that attachment/forwarding,
-reserved controls, and failure/integration behavior can each be implemented and tested
-independently.
+**Tests**: Add focused unit tests for mux lifecycle behavior and a small number of real-path integration tests through the production Swarm ACP server adapter.
 
-## Format: `[ID] [P?] [Story] Description`
+**Organization**: Tasks are grouped into:
 
-- **[P]**: Can run in parallel (different files, no dependencies)
-- **[Story]**: Which story phase this task belongs to (`US1`, `US2`, `US3`)
-- All descriptions MUST include exact file paths.
+1. foundational mux types;
+2. attachment and forwarding;
+3. production ACP adapter and reserved controls;
+4. lifecycle robustness and macro integration;
+5. final validation.
 
-## Path Conventions
+## Format: [ID] [P?] [Story] Description
 
-- Single project layout: `src/`, `tests/` at repository root.
-- SwarmACPMux implementation lives under `src/nate_ntm/runtime/`.
-- Tests live under `tests/unit/runtime/` and `tests/integration/runtime_acp/` (baseline Epic 005)
-  and `tests/integration/acp/` (new ACP-facing mux tests for this feature).
+- **[P]**: May run in parallel because it modifies different files and has no incomplete prerequisite.
+- **[Story]**: `US1`, `US2`, or `US3`.
+- Every task names the exact file or files it changes.
+- User-story tasks include the appropriate `[US#]` label.
+- Setup and final validation tasks are intentionally untagged.
 
----
+## Canonical Paths
 
-## Phase 1: Setup (Shared Infrastructure)
+```
+src/nate_ntm/runtime/swarm_acp_mux.py
+src/nate_ntm/runtime/swarm_acp_server.py
+src/nate_ntm/runtime/__init__.py
 
-**Purpose**: Establish module and test skeletons for SwarmACPMux and ACP-facing integration tests.
+tests/unit/runtime/test_swarm_acp_mux.py
+tests/unit/runtime/test_swarm_acp_server.py
+tests/integration/acp/test_swarm_acp_mux_real_path.py
+tests/integration/acp/test_reserved_swarm_controls.py
+```
 
-- [ ] T001 Create `src/nate_ntm/runtime/swarm_acp_mux.py` module with `SwarmACPMux` dataclass
-  skeleton, `_Attachment` dataclass, and error type declarations from
-  `specs/009-swarm-acp-mux/spec.md` and `data-model.md` (no behavior yet).
-- [ ] T002 [P] Create unit test package stub `tests/unit/runtime/test_swarm_acp_mux.py` with
-  empty test classes/fixtures referencing `SwarmACPMux` and `SwarmACPMuxError`.
-- [ ] T003 [P] Create integration test package `tests/integration/acp/` with `__init__.py`,
-  `tests/integration/acp/test_swarm_acp_mux_real_path.py`, and
-  `tests/integration/acp/test_reserved_swarm_controls.py` files stubbed to follow the
-  flows in `specs/009-swarm-acp-mux/quickstart.md` §3–§5.
+`src/nate_ntm/runtime/swarm_acp_server.py` is the single production adapter implementation for Epic 009. Tests MUST exercise that implementation rather than creating a second test-only adapter.
 
----
+------------------------------------------------------------------------
 
-## Phase 2: Foundational (Blocking Prerequisites)
+## Phase 1: Foundational Types and Boundaries
 
-**Purpose**: Core mux data structures and lifecycle wiring required before exercising any
-scenario.
+**Purpose**: Establish the complete mux data model and dependency boundaries required by all user stories.
 
-**⚠️ CRITICAL**: No scenario/user-story work should begin until this phase is complete.
+- [ ] T001 Implement the foundational Epic 009 types in `src/nate_ntm/runtime/swarm_acp_mux.py`:
 
-- [ ] T004 Implement `_Attachment` dataclass and connection-local state fields on
-  `SwarmACPMux` in `src/nate_ntm/runtime/swarm_acp_mux.py` to match
-  `specs/009-swarm-acp-mux/data-model.md` §1.4 (including `attached_agent_id`,
-  `_attachment`, `_lifecycle_lock`, `_failure`, `_closed`).
-- [ ] T005 [P] Implement `SwarmACPMuxError` hierarchy in
-  `src/nate_ntm/runtime/swarm_acp_mux.py` as specified in `specs/009-swarm-acp-mux/spec.md`
-  §13 (`SwarmACPMuxClosedError`, `UnknownAgentError`, `NoAttachedAgentError`,
-  `StaleAttachmentError`, `UnsupportedReservedUpdateError`).
-- [ ] T006 [P] Implement `__post_init__` and `wait_failed()` plumbing in
-  `SwarmACPMux` to initialize `_failure` and expose the failure waiter semantics from
-  `specs/009-swarm-acp-mux/spec.md` §6, §8.10, and §14.
-- [ ] T007 Wire `SwarmACPMux` into the runtime package by exporting it from
-  `src/nate_ntm/runtime/__init__.py` and updating any internal imports or type hints that will
-  use it in future adapter code.
+  - `SwarmAgentClient`;
+  - `ExternalACPConnection`;
+  - `PreparedAttachment`;
+  - `_Attachment`;
+  - `SwarmACPMux`;
+  - `SwarmACPMuxError`;
+  - `SwarmACPMuxClosedError`;
+  - `UnknownAgentError`;
+  - `NoAttachedAgentError`;
+  - `StaleAttachmentError`;
+  - `UnsupportedReservedUpdateError`.
 
----
+  Match `specs/009-swarm-acp-mux/spec.md` §§5–6 and §13 and `specs/009-swarm-acp-mux/data-model.md` §1. Include all connection-local state fields, but do not implement attachment behavior in this task.
+- [ ] T002 Implement mux initialization and shared lifecycle primitives in `src/nate_ntm/runtime/swarm_acp_mux.py`:
 
-## Phase 3: User Story 1 – Attachment & Forwarding Semantics (Priority: P1) 🎯 MVP
+  - initialize `_failure` in `__post_init__`;
+  - add open-state and current-attachment validation helpers;
+  - add identity comparison using the concrete `_Attachment` or its token;
+  - add internal subscription-exit cleanup that is safe to call exactly once.
 
-**Goal**: Allow a client to attach an external ACP session to a single agent and receive a
-replay of retained typed ACP updates followed by live updates with correct ordering and
-lifecycle semantics.
+  Follow `specs/009-swarm-acp-mux/spec.md` §§6, 11, and 14.
+- [ ] T003 Export the public Epic 009 mux types from `src/nate_ntm/runtime/__init__.py`, including `SwarmACPMux`, `PreparedAttachment`, and the public mux error classes.
 
-**Independent Test**: With a running runtime and ACP client layer from Epic 008, a single
-external session can attach to an agent, observe `_attach` acknowledgment, then see
-replay-then-live typed `SessionUpdate` values in order, and detach cleanly without stopping
-the agent or affecting other subscribers (`specs/009-swarm-acp-mux/spec.md` §7–§12 and
-§16.1–§16.3; `specs/009-swarm-acp-mux/quickstart.md` §3).
+------------------------------------------------------------------------
+
+## Phase 2: User Story 1 — Attachment, Forwarding, and Agent Operations
+
+**Priority**: P1 — MVP
+
+**Goal**: One external ACP session can attach to one concrete agent ACP session, acknowledge the attachment before replay begins, receive retained and live typed updates in order, issue prompts and interrupts, and detach without stopping the agent or disrupting other subscribers.
+
+**Independent Test**: Through the production adapter in `src/nate_ntm/runtime/swarm_acp_server.py`, an external session can perform:
+
+```
+_attach
+→ attachment acknowledgment
+→ retained SessionUpdate replay
+→ live SessionUpdate delivery
+→ prompt
+→ interrupt
+→ _detach
+```
+
+No new-agent update may appear before acknowledgment. Detach must leave the agent and independent subscribers active.
 
 ### Tests for User Story 1
 
-- [ ] T008 [P] [US1] Implement attachment-establishment and ordering unit tests in
-  `tests/unit/runtime/test_swarm_acp_mux.py` covering: successful `prepare_attach()` for an
-  active session, `AgentSessionNotActive` propagation, no acknowledgment on failed
-  preparation, and correct `PreparedAttachment.newly_prepared` behavior (spec §8.1, §16.1).
-- [ ] T009 [P] [US1] Implement forwarding unit tests in
-  `tests/unit/runtime/test_swarm_acp_mux.py` using fake `SwarmAgentClient` and
-  `ExternalACPConnection` to verify replay-before-live, acknowledgment-before-forwarding,
-  and that updates are forwarded unchanged as `SessionUpdate` instances (spec §7, §9,
-  §16.2).
-- [ ] T010 [P] [US1] Implement switching-attachment unit tests in
-  `tests/unit/runtime/test_swarm_acp_mux.py` that simulate changing agents and assert no
-  old-agent update after the new-agent acknowledgment, and that the old subscription is
-  exited before the new one is acknowledged (spec §7, §9, §16.3).
+- [ ] T004 [US1] Add attachment transaction tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
+
+  - successful first attachment;
+  - `AgentSessionNotActive` propagation;
+  - unknown durable agent rejection;
+  - no active attachment after failed subscription establishment;
+  - `PreparedAttachment.newly_prepared=True` for a fresh attachment;
+  - `PreparedAttachment.newly_prepared=False` for a healthy same-agent attachment;
+  - stale prepared handles cannot activate or remove a newer attachment.
+
+- [ ] T005 [US1] Add acknowledgment and rollback tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
+
+  - no replay or live forwarding before activation;
+  - successful activation begins retained replay before live delivery;
+  - acknowledgment failure rolls back a newly prepared attachment;
+  - acknowledgment failure leaves a reused healthy same-agent attachment intact;
+  - `abort_attachment()` with a stale handle does not alter the current attachment.
+
+- [ ] T006 [US1] Add forwarding and switching tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
+
+  - forwarding the underlying `SessionUpdate` unchanged;
+  - preserving the order yielded by Epic 008;
+  - delivering an update published during preparation exactly once;
+  - stopping and awaiting the old forwarding task before establishing the new attachment;
+  - exiting the old subscription before the new acknowledgment;
+  - preventing old-agent output after the new-agent acknowledgment;
+  - preventing an obsolete forwarding task from clearing a newer attachment.
+
+- [ ] T007 [US1] Add agent-operation and detach tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
+
+  - `prompt()` delegates to the attached agent;
+  - `interrupt()` delegates to the attached agent;
+  - both raise `NoAttachedAgentError` while unattached;
+  - `detach()` is idempotent;
+  - detach exits only this mux's subscription;
+  - detach leaves the underlying agent running;
+  - an independent subscriber remains active after mux detachment.
 
 ### Implementation for User Story 1
 
-- [ ] T011 [US1] Implement `prepare_attach()` in `src/nate_ntm/runtime/swarm_acp_mux.py`
-  including: open/closed checks, durable swarm membership validation via `RuntimeDaemon`,
-  lifecycle serialization via `_lifecycle_lock`, idempotent same-agent handling returning
-  `PreparedAttachment(newly_prepared=False)`, and subscription establishment via
-  `subscribe_acp_updates()` with token tracking (spec §6, §8.1; data-model §1.4).
-- [ ] T012 [US1] Implement `activate_attachment()` in
-  `src/nate_ntm/runtime/swarm_acp_mux.py` to validate the `PreparedAttachment` token, start
-  or re-use the forwarding task, release the forwarding gate, and enforce idempotent
-  activation semantics for reused attachments (spec §8.2).
-- [ ] T013 [US1] Implement `abort_attachment(prepared)` internal helper or method in
-  `src/nate_ntm/runtime/swarm_acp_mux.py` that performs token- and
-  `newly_prepared`-aware rollback, ensuring failed acknowledgment never starts forwarding
-  and never tears down a pre-existing healthy attachment (spec §8.2–§8.3 and
-  `contracts/swarm-acp-mux-session.md` §3.3).
-- [ ] T014 [US1] Implement `_run_forwarding()` and `_attachment_finished()` in
-  `src/nate_ntm/runtime/swarm_acp_mux.py` so that forwarding waits for activation, streams
-  retained+live updates through `ExternalACPConnection.session_update`, reports fatal
-  failures via `_report_failure()`, and performs identity-safe cleanup (`spec.md` §9, §14).
-- [ ] T015 [US1] Implement `detach()` in `src/nate_ntm/runtime/swarm_acp_mux.py` as an
-  idempotent operation that cancels and awaits the forwarding task, exits the subscription
-  context, and leaves the underlying agent and other subscribers running (`spec.md` §8.4,
-  §9, §15).
-- [ ] T016 [US1] Implement `close()` and async context-manager support (`__aenter__`,
-  `__aexit__`) on `SwarmACPMux` in `src/nate_ntm/runtime/swarm_acp_mux.py` to perform
-  structured shutdown and cancel `wait_failed()` callers without treating closure itself as
-  a failure (`spec.md` §8.10, §10, §14; `contracts/swarm-acp-mux-session.md` §5).
+- [ ] T008 [US1] Implement `prepare_attach()` in `src/nate_ntm/runtime/swarm_acp_mux.py` with:
 
----
+  - closed-state rejection;
+  - durable membership validation through `RuntimeDaemon`;
+  - `_lifecycle_lock` serialization;
+  - healthy same-agent reuse with `newly_prepared=False`;
+  - complete removal of an obsolete or different attachment;
+  - one call to `subscribe_acp_updates(agent_id)`;
+  - retention of the entered subscription and concrete iterator;
+  - a unique token for the resulting `_Attachment`;
+  - `newly_prepared=True` for a fresh attachment.
 
-## Phase 4: User Story 2 – Reserved Swarm Controls & Views (Priority: P2)
+- [ ] T009 [US1] Implement `activate_attachment()` and `abort_attachment()` in `src/nate_ntm/runtime/swarm_acp_mux.py`:
 
-**Goal**: Expose swarm-level views and inspection capabilities via reserved ACP controls
-`_swarm_status`, `_agent_detail`, and `_detach` backed by the existing runtime daemon APIs.
+  - activation validates the current token;
+  - activation starts at most one forwarding task;
+  - activation of a reused healthy attachment is a no-op;
+  - abort removes a fresh, still-current prepared attachment;
+  - abort preserves a reused healthy attachment;
+  - abort with a stale token never changes the current attachment.
 
-**Independent Test**: From an external ACP client, `_swarm_status` and `_agent_detail`
-return shapes consistent with the runtime control API, including the current
-`attached_agent_id` / `attached` flags, while `_detach` is idempotent and never stops the
-underlying agent (`contracts/swarm-acp-mux-session.md` §3.1–§3.4;
-`specs/009-swarm-acp-mux/quickstart.md` §4).
+- [ ] T010 [US1] Implement `_run_forwarding()` and `_attachment_finished()` in `src/nate_ntm/runtime/swarm_acp_mux.py`:
+
+  - consume only the iterator entered by `prepare_attach()`;
+  - wait for activation before consuming updates;
+  - call `ExternalACPConnection.session_update()` with the underlying `SessionUpdate`;
+  - preserve Epic 008 ordering;
+  - clean up normal exhaustion without closing the mux;
+  - use attachment identity before clearing mux state.
+
+- [ ] T011 [US1] Implement mux failure observation in `src/nate_ntm/runtime/swarm_acp_mux.py`:
+
+  - `_report_failure()` records only the first fatal forwarding failure;
+  - `wait_failed()` re-raises that failure;
+  - iterator and external-write exceptions are fatal;
+  - normal stream exhaustion is not fatal;
+  - cancellation caused by detach or close is not fatal;
+  - clean close cancels a still-pending failure waiter.
+
+- [ ] T012 [US1] Implement `prompt()`, `interrupt()`, and `detach()` in `src/nate_ntm/runtime/swarm_acp_mux.py` according to `specs/009-swarm-acp-mux/spec.md` §§8.4–8.6:
+
+  - prompt and interrupt require an open mux and current attachment;
+  - detach is idempotent;
+  - detach clears current state before awaiting task termination;
+  - detach cancels and awaits forwarding;
+  - detach exits the retained subscription exactly once;
+  - detach does not stop the agent.
+
+- [ ] T013 [US1] Implement `close()`, `__aenter__()`, and `__aexit__()` in `src/nate_ntm/runtime/swarm_acp_mux.py`:
+
+  - close becomes effective exactly once;
+  - close detaches the current attachment;
+  - close cancels pending `wait_failed()` callers without reporting a failure;
+  - subsequent public operations raise `SwarmACPMuxClosedError`.
+
+- [ ] T014 [US1] Implement the minimal production session and `_attach`/`_detach` flow in `src/nate_ntm/runtime/swarm_acp_server.py`:
+
+  - create exactly one `SwarmACPMux` per external ACP session;
+  - execute `_attach` as prepare → acknowledgment → activate;
+  - call `abort_attachment()` if acknowledgment fails or is cancelled;
+  - dispatch `_detach` to `mux.detach()`;
+  - route ordinary prompt and interrupt operations through the mux;
+  - serialize `_attach`, `_detach`, and session shutdown for one external session.
+
+- [ ] T015 [US1] Add the MVP real-path test in `tests/integration/acp/test_swarm_acp_mux_real_path.py` using the production code in `src/nate_ntm/runtime/swarm_acp_server.py`. Verify:
+
+  - a real Epic 008 subscription is established before acknowledgment;
+  - no retained or live update appears before acknowledgment;
+  - retained output precedes live output;
+  - prompt and interrupt reach the attached agent;
+  - detach stops mux delivery without stopping the agent;
+  - an independent subscriber continues receiving updates.
+
+------------------------------------------------------------------------
+
+## Phase 3: User Story 2 — Reserved Controls and Runtime Views
+
+**Priority**: P2
+
+**Goal**: The production Swarm ACP server adapter exposes `_swarm_status`, `_agent_detail`, `_attach`, and `_detach` as reserved controls and maps domain failures to stable logical error codes.
+
+**Independent Test**: Through the production adapter, reserved controls return the contract-defined payloads and errors, and no underscore-prefixed client control is forwarded to an agent.
 
 ### Tests for User Story 2
 
-- [ ] T017 [P] [US2] Add unit tests in `tests/unit/runtime/test_swarm_acp_mux.py` for
-  `get_swarm_status()` and `get_agent_detail()` that use a fake `RuntimeDaemon` to assert
-  response shapes and attachment-aware flags (`spec.md` §8.7–§8.8;
-  `data-model.md` §2; contract §3.1–§3.2).
-- [ ] T018 [P] [US2] Add reserved-control integration tests in
-  `tests/integration/acp/test_reserved_swarm_controls.py` using a minimal Swarm ACP server
-  adapter fixture to drive `_swarm_status`, `_agent_detail`, `_attach`, and `_detach` and
-  assert logical payloads and error codes (contract §2–§3;
-  `specs/009-swarm-acp-mux/quickstart.md` §4–§5).
+- [ ] T016 [P] [US2] Add mux view tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
+
+  - `get_swarm_status()` returns daemon-owned status plus `attached_agent_id`;
+  - `get_agent_detail()` returns daemon-owned detail plus the connection-local `attached` flag;
+  - unknown agents raise `UnknownAgentError`;
+  - `max_events` is passed through unchanged.
+
+- [ ] T017 [US2] Add production adapter routing and error-mapping tests to `tests/unit/runtime/test_swarm_acp_server.py` covering:
+
+  - `_swarm_status`;
+  - `_agent_detail`;
+  - `_attach`;
+  - `_detach`;
+  - malformed reserved requests;
+  - unknown reserved operation names;
+  - reserved operations never reaching the attached agent;
+  - underscore-prefixed output emitted by an agent being forwarded normally;
+  - stable mappings for all logical `MUX_*` codes in the contract.
 
 ### Implementation for User Story 2
 
-- [ ] T019 [US2] Implement `get_swarm_status()` in `src/nate_ntm/runtime/swarm_acp_mux.py`
-  to wrap `RuntimeDaemon.get_swarm_status()` with the `attached_agent_id` field exactly as
-  described in `specs/009-swarm-acp-mux/spec.md` §8.7 and contract §3.1.
-- [ ] T020 [US2] Implement `get_agent_detail()` in `src/nate_ntm/runtime/swarm_acp_mux.py`
-  to wrap `RuntimeDaemon.get_agent_detail()` with `attached` flag and recent events,
-  matching `specs/009-swarm-acp-mux/spec.md` §8.8,
-  `specs/009-swarm-acp-mux/data-model.md` §2, and contract §3.2.
-- [ ] T021 [US2] Implement a minimal in-process Swarm ACP server adapter helper (for
-  example, `tests/integration/acp/_test_swarm_acp_adapter.py`) that creates a
-  `SwarmACPMux` per session, dispatches reserved controls to mux/daemon methods, and maps
-  domain errors to the logical error codes in `specs/009-swarm-acp-mux/contracts/swarm-acp-mux-session.md` §2.
-- [ ] T022 [US2] Ensure reserved operations are not forwarded as agent-directed updates by
-  tightening any adapter routing logic so underscore-prefixed client operations are
-  handled at the mux boundary and never reach agent ACP sessions (`specs/009-swarm-acp-mux/spec.md` §12; contract §3; `quickstart.md` §4.3–§4.4).
+- [ ] T018 [US2] Implement `get_swarm_status()` and `get_agent_detail()` in `src/nate_ntm/runtime/swarm_acp_mux.py` using the daemon-owned views and response shapes defined in `specs/009-swarm-acp-mux/contracts/swarm-acp-mux-session.md` §§3.1–3.2.
+- [ ] T019 [US2] Complete reserved-control parsing and dispatch in `src/nate_ntm/runtime/swarm_acp_server.py`:
 
----
+  - validate request payloads;
+  - dispatch `_swarm_status`, `_agent_detail`, `_attach`, and `_detach`;
+  - reject unknown underscore-prefixed controls;
+  - never route reserved client controls to an agent;
+  - leave underscore-prefixed agent output untouched.
 
-## Phase 5: User Story 3 – Failure Propagation & Macro Integration (Priority: P3)
+- [ ] T020 [US2] Implement the complete domain-to-protocol error mapping in `src/nate_ntm/runtime/swarm_acp_server.py` for:
 
-**Goal**: Ensure forwarding failures and shutdown conditions are observable and correctly
-wired through the runtime and Swarm ACP server adapter, preserving structured concurrency
-semantics.
+  - `MUX_NO_ATTACHED_AGENT`;
+  - `MUX_CLOSED`;
+  - `MUX_UNKNOWN_AGENT`;
+  - `MUX_AGENT_SESSION_NOT_ACTIVE`;
+  - `MUX_STALE_ATTACHMENT`;
+  - `MUX_INVALID_REQUEST`;
+  - `MUX_INTERNAL_ERROR`.
 
-**Independent Test**: A real-path integration test can start the runtime daemon, ACP client
-layer, and Swarm ACP server adapter, run through attach → prompt/interrupt → detach flows,
-and then shut everything down cleanly while confirming correct failure propagation and
-lifecycle behavior (`specs/009-swarm-acp-mux/spec.md` §9–§12, §16.6–§16.9;
-`specs/009-swarm-acp-mux/quickstart.md` §3–§5).
+  Log unexpected internal failures without exposing internal details to the external client.
+- [ ] T021 [US2] Add reserved-control integration coverage in `tests/integration/acp/test_reserved_swarm_controls.py` using `src/nate_ntm/runtime/swarm_acp_server.py`. Verify the contract-defined payloads, idempotent detach, same-agent attachment behavior, and logical error codes through the production dispatch path.
+
+------------------------------------------------------------------------
+
+## Phase 4: User Story 3 — Connection Lifetime, Races, and Failure Propagation
+
+**Priority**: P3
+
+**Goal**: The production adapter closes cleanly and deterministically when inbound processing ends, forwarding fails, attachments switch, or shutdown races with lifecycle operations.
+
+**Independent Test**: A real external ACP session can run through attachment, switching, ordinary operations, forwarding failure, and shutdown without stale state, leaked tasks, duplicate subscriptions, or hung connection handlers.
 
 ### Tests for User Story 3
 
-- [ ] T023 [P] [US3] Extend `tests/unit/runtime/test_swarm_acp_mux.py` with
-  failure-propagation tests that inject exceptions from the ACP subscription iterator and
-  from `ExternalACPConnection.session_update` to ensure `_report_failure()` records the
-  first fatal failure and `wait_failed()` surfaces it (`specs/009-swarm-acp-mux/spec.md`
-  §9, §14, §16.7–§16.8).
-- [ ] T024 [P] [US3] Implement real-path integration test
-  `tests/integration/acp/test_swarm_acp_mux_real_path.py` that composes the runtime
-  daemon, typed ACP streaming layer from Epic 008, Swarm ACP server adapter, and
-  `SwarmACPMux` to exercise the scenario in `specs/009-swarm-acp-mux/quickstart.md` §3
-  (attach, replay-then-live updates, prompt, detach).
-- [ ] T025 [P] [US3] Implement integration tests in
-  `tests/integration/acp/test_reserved_swarm_controls.py` verifying error handling
-  behaviors from `specs/009-swarm-acp-mux/quickstart.md` §5 and
-  `specs/009-swarm-acp-mux/contracts/swarm-acp-mux-session.md` §2
-  (`MUX_NO_ATTACHED_AGENT`, `MUX_CLOSED`, `MUX_UNKNOWN_AGENT`,
-  `MUX_AGENT_SESSION_NOT_ACTIVE`, `MUX_STALE_ATTACHMENT`, `MUX_INVALID_REQUEST`,
-  `MUX_INTERNAL_ERROR`).
+- [ ] T022 [P] [US3] Add mux lifecycle race tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
+
+  - detach racing with attachment;
+  - close racing with attachment;
+  - old forwarding completion after a new preparation;
+  - stale activation after detach;
+  - normal agent-stream exhaustion leaving the mux open and unattached;
+  - first-failure-only behavior;
+  - clean cancellation of `wait_failed()` during close.
+
+- [ ] T023 [US3] Add production adapter lifetime tests to `tests/unit/runtime/test_swarm_acp_server.py` covering:
+
+  - normal inbound completion cancels the failure watcher;
+  - a forwarding failure cancels inbound processing;
+  - inbound failure cancels the failure watcher;
+  - the losing task is always awaited;
+  - cleanup closes the mux and transport;
+  - `_attach`, `_detach`, and shutdown never overlap for one external session.
+
+- [ ] T024 [US3] Extend `tests/integration/acp/test_swarm_acp_mux_real_path.py` with one macro scenario that:
+
+  - attaches to agent A;
+  - receives retained and live updates;
+  - sends a prompt and interrupt;
+  - switches to agent B;
+  - verifies no A output after B acknowledgment;
+  - verifies B replay before B live output;
+  - injects or triggers an external forwarding failure;
+  - confirms the outer connection handler terminates and cleans up;
+  - confirms both agents remain runtime-managed.
 
 ### Implementation for User Story 3
 
-- [ ] T026 [US3] Implement `_report_failure()` and finalize `wait_failed()` semantics in
-  `src/nate_ntm/runtime/swarm_acp_mux.py`, ensuring only the first fatal forwarding
-  failure is recorded, normal subscription exhaustion and detach/close cancellations are
-  not treated as failures, and structured-concurrency patterns in `specs/009-swarm-acp-mux/spec.md` §10 are supported.
-- [ ] T027 [US3] Integrate `SwarmACPMux` into the Swarm ACP server adapter process (for
-  example, `src/nate_ntm/runtime/acp_server_adapter.py` or an equivalent module), wiring
-  structured concurrency for inbound request processing vs. `mux.wait_failed()` using the
-  first-completion race described in `specs/009-swarm-acp-mux/spec.md` §10.
-- [ ] T028 [US3] Ensure lifecycle serialization rules are enforced in adapter-level request
-  handling so that `_attach`, `_detach`, and mux/connection shutdown follow the
-  single-threaded per-session rules in `specs/009-swarm-acp-mux/spec.md` §11 and
-  `specs/009-swarm-acp-mux/contracts/swarm-acp-mux-session.md` §1.2, including prevention
-  of overlapping attachment transactions.
-- [ ] T029 [US3] Align log messages and runtime diagnostics around mux failures and
-  shutdown so that external errors corresponding to `MUX_INTERNAL_ERROR` are observable in
-  test and production logs.
+- [ ] T025 [US3] Implement the first-completion connection lifetime in `src/nate_ntm/runtime/swarm_acp_server.py`:
 
----
+  - race inbound request processing against `mux.wait_failed()`;
+  - cancel and await the loser;
+  - propagate the winner's failure;
+  - treat normal inbound completion as connection termination;
+  - always close the mux and concrete external transport.
 
-## Phase 6: Polish & Cross-Cutting Concerns
+- [ ] T026 [US3] Enforce the single-threaded per-session control stream in `src/nate_ntm/runtime/swarm_acp_server.py`:
 
-**Purpose**: Documentation alignment, checklist coverage, and final validation across design
-and implementation artifacts.
+  - no second `_attach` or `_detach` begins while an attachment transaction is in flight;
+  - shutdown cannot interleave between `prepare_attach()` and `activate_attachment()`;
+  - ordinary prompt and interrupt requests may proceed only according to the adapter concurrency rules established by the ACP SDK integration.
 
-- [ ] T030 [P] Update `specs/009-swarm-acp-mux/quickstart.md` to match the final test file
-  paths and acceptance flows implemented in `tests/unit/runtime/test_swarm_acp_mux.py` and
-  `tests/integration/acp/*.py`.
-- [ ] T031 [P] Align `specs/009-swarm-acp-mux/data-model.md`, `spec.md`, and
-  `contracts/swarm-acp-mux-session.md` with the actual `SwarmACPMux` implementation
-  (especially `PreparedAttachment.newly_prepared`, `abort_attachment(prepared)`
-  semantics, and error mapping), fixing any drift discovered during coding.
-- [ ] T032 [P] Ensure `specs/009-swarm-acp-mux/checklists/acp-mux.md` is updated so that
-  CHK006, CHK007, and related items accurately reflect the clarified three-stage
-  attachment transaction, ack-failure behavior, and mux vs. adapter responsibilities.
-- [ ] T033 [P] Add or update high-level documentation references (for example,
-  `AGENTS_MK2.md` and any feature index docs) to point to the SwarmACPMux spec, plan,
-  contracts, quickstart, and this tasks.md for future contributors.
-- [ ] T034 Run the full SwarmACPMux quickstart validation from
-  `specs/009-swarm-acp-mux/quickstart.md` (including unit tests and integration tests) and
-  record any follow-up items or deviations in `specs/009-swarm-acp-mux/research.md` and a
-  future `plan_feedback.md` (if added).
+- [ ] T027 [US3] Finalize lifecycle logging in `src/nate_ntm/runtime/swarm_acp_mux.py` and `src/nate_ntm/runtime/swarm_acp_server.py`:
 
----
+  - record attachment preparation, activation, switching, detach, and close at useful levels;
+  - log fatal forwarding failures exactly once;
+  - include agent and external-session identifiers needed for diagnosis;
+  - avoid duplicate tracebacks for expected cancellation and normal shutdown.
 
-## Dependencies & Execution Order
+------------------------------------------------------------------------
+
+## Phase 5: Conformance and Final Validation
+
+**Purpose**: Verify that the implementation matches the approved design and that the complete repository remains healthy.
+
+- [ ] T028 Verify implementation conformance against:
+
+  - `specs/009-swarm-acp-mux/spec.md`;
+  - `specs/009-swarm-acp-mux/data-model.md`;
+  - `specs/009-swarm-acp-mux/contracts/swarm-acp-mux-session.md`;
+  - `specs/009-swarm-acp-mux/quickstart.md`.
+
+  Correct implementation defects in `src/nate_ntm/runtime/swarm_acp_mux.py` and `src/nate_ntm/runtime/swarm_acp_server.py`. Change normative documents only when an implementation discovery demonstrates a genuine design defect and the design change is explicit.
+- [ ] T029 Run the focused Epic 009 tests:
+
+  ```
+  uv run pytest tests/unit/runtime/test_swarm_acp_mux.py -vv
+  uv run pytest tests/unit/runtime/test_swarm_acp_server.py -vv
+  uv run pytest tests/integration/acp/test_swarm_acp_mux_real_path.py -vv
+  uv run pytest tests/integration/acp/test_reserved_swarm_controls.py -vv
+  ```
+
+  Fix all failures in the implementation or tests. Do not weaken assertions to accommodate incorrect behavior.
+- [ ] T030 Run the complete default test suite with:
+
+  ```
+  uv run pytest
+  ```
+
+  The default command MUST run the complete repository test suite. Fix any regressions caused by Epic 009.
+- [ ] T031 Update `specs/009-swarm-acp-mux/quickstart.md` only where final production module names, commands, or verified test paths differ from the approved document. Do not add speculative files or duplicate implementation guidance.
+
+------------------------------------------------------------------------
+
+## Dependencies and Execution Order
 
 ### Phase Dependencies
 
-- **Setup (Phase 1)**: No dependencies – can start immediately.
-- **Foundational (Phase 2)**: Depends on Setup (Phase 1) completion – BLOCKS all
-  user-story phases.
-- **User Story 1 (Phase 3 – P1)**: Depends on Foundational (Phase 2); delivers the core
-  attachment and forwarding MVP (`specs/009-swarm-acp-mux/spec.md` §7–§9).
-- **User Story 2 (Phase 4 – P2)**: Depends on User Story 1 (Phase 3); adds reserved swarm
-  controls and views on top of a working mux.
-- **User Story 3 (Phase 5 – P3)**: Depends on User Story 1 (Phase 3); may proceed in
-  parallel with User Story 2 once basic attach/forward is stable.
-- **Polish (Phase 6)**: Depends on all desired user-story phases being complete.
+- **Phase 1** has no feature-local prerequisites.
+- **US1** depends on Phase 1 and delivers the first complete, externally testable mux path.
+- **US2** depends on the production adapter and mux lifecycle delivered by US1.
+- **US3** depends on US1 and the adapter dispatch delivered by US2.
+- **Final validation** depends on all implemented user stories.
 
-### User Story Dependencies
+### Within US1
 
-- **User Story 1 (P1)**: Baseline for all other phases (attachment lifecycle, forwarding,
-  detach, close).
-- **User Story 2 (P2)**: Builds on User Story 1’s mux implementation and runtime daemon
-  views.
-- **User Story 3 (P3)**: Builds on User Story 1 and adapter integration, focusing on
-  robustness and real-path scenarios.
+```
+T001–T003
+    ↓
+T004–T007 tests
+    ↓
+T008–T013 mux implementation
+    ↓
+T014 production adapter MVP
+    ↓
+T015 real-path MVP validation
+```
 
-### Within Each User Story
-
-- Write or extend tests before completing implementation tasks where practical, especially
-  for error handling and concurrency-sensitive behaviors.
-- Implement core mux behavior before adding integration/adapters.
-- Validate each story’s independent test criteria from `specs/009-swarm-acp-mux/spec.md`
-  §16 and `specs/009-swarm-acp-mux/quickstart.md` before moving to the next phase.
+Tests may be written before implementation, but tasks that depend on production behavior are not marked `[P]`.
 
 ### Parallel Opportunities
 
-- All tasks marked `[P]` can be worked on in parallel once their phase prerequisites are
-  satisfied (for example, unit tests in parallel with adapter scaffolding).
-- After Phase 3 (User Story 1) is stable, User Story 2 and User Story 3 tasks can proceed
-  concurrently by different contributors.
-- Polish/documentation tasks in Phase 6 can largely run in parallel once code and tests
-  stabilize.
+- T016 may run in parallel with T017 because they modify separate test files after US1 is complete.
+- T022 may run in parallel with early work on T023 after US2 is complete.
+- Documentation correction in T031 begins only after final module names and test paths are stable.
 
----
+------------------------------------------------------------------------
 
 ## Implementation Strategy
 
-### MVP First (User Story 1 Only)
+### MVP
 
-1. Complete Phase 1: Setup (T001–T003).
-2. Complete Phase 2: Foundational (T004–T007).
-3. Complete Phase 3: User Story 1 (T008–T016).
-4. **STOP and VALIDATE**: Run the attachment and forwarding unit tests and any early
-   integration tests; confirm invariants from `specs/009-swarm-acp-mux/spec.md` §15 hold in
-   practice.
-5. Decide whether to proceed to User Story 2 and User Story 3 based on findings.
+Complete T001–T015.
 
-### Incremental Delivery
+The MVP is complete only when the real production path demonstrates:
 
-1. Setup + Foundational → `SwarmACPMux` skeleton wired into the runtime.
-2. Add User Story 1 → Attachment and forwarding MVP.
-3. Add User Story 2 → Reserved swarm controls and views wired to runtime APIs.
-4. Add User Story 3 → Failure propagation and macro integration through the full ACP
-   stack.
-5. Finalize Polish phase → Docs, checklists, and quickstart kept in sync.
+- one mux per external session;
+- prepare → acknowledgment → activate ordering;
+- token- and flag-aware rollback;
+- retained replay before live delivery;
+- prompt and interrupt routing;
+- idempotent detach;
+- independent subscribers remaining active;
+- no test-only adapter implementation.
 
-### Parallel Team Strategy
+### Full Feature
 
-- One contributor focuses on mux internals and unit tests (Phase 2 + User Story 1 tasks in
-  `src/nate_ntm/runtime/swarm_acp_mux.py` and `tests/unit/runtime/`).
-- Another owns Swarm ACP server adapter and real-path integration tests (User Story 2+3
-  tasks in `src/nate_ntm/runtime/*` and `tests/integration/acp/`).
-- A third maintains documentation, contracts, and checklist alignment (Phase 6 tasks under
-  `specs/009-swarm-acp-mux/`).
+Complete T016–T027 to add:
 
----
+- reserved controls;
+- runtime views;
+- stable error mapping;
+- connection lifetime management;
+- lifecycle serialization;
+- switching and race handling;
+- macro failure propagation.
+
+### Completion
+
+Complete T028–T031 and require both focused Epic 009 tests and the full default test suite to pass.
+
+------------------------------------------------------------------------
 
 ## Notes
 
-- `[P]` tasks: independent files or concerns that can safely be implemented in parallel.
-- `[US1]`, `[US2]`, `[US3]` labels: trace tasks back to the attachment/forwarding, reserved
-  controls, and failure/integration phases described in spec and quickstart.
-- Keep tasks small and verifiable; prefer more, narrower tasks over large, vague ones.
-- Ensure tests for concurrency and failure handling are robust and deterministic, leaning
-  on fake components for unit tests and real infrastructure for at least one macro
-  integration test.
+- Prefer one complete implementation over parallel test and production variants.
+- Do not create a second ACP adapter under `tests/`.
+- Do not create empty source or test skeletons.
+- Do not add speculative documentation files.
+- Keep lifecycle tests broad enough to prove complete state transitions rather than testing private helpers in isolation.
+- Use fake dependencies for focused mux unit tests and the real Epic 008 stream plus production adapter for macro integration tests.
