@@ -151,7 +151,7 @@ A convenience `attach(agent_id, acknowledge=...)` helper is allowed **only** if 
 **Rationale**:
 
 - Gives the outer connection handler a single, explicit point to observe forwarding failures.
-- Fits naturally into structured concurrency patterns where one task waits on `mux.wait_failed()` while another serves inbound requests.
+- Fits naturally into structured concurrency patterns where one task waits on `mux.wait_failed()` while another serves inbound requests, and the adapter treats them as a first-completion race: whichever finishes first (normal completion or failure) cancels the other and triggers connection cleanup.
 
 **Alternatives considered**:
 

@@ -29,6 +29,14 @@ Wire-level ACP encoding (how these operations appear as ACP extension methods or
 
 The mux consumes typed ACP updates through `subscribe_acp_updates(agent_id)` and forwards the underlying `SessionUpdate` objects via `ExternalACPConnection.session_update(session_id, update)`.
 
+For each external ACP session, the adapter MUST treat `_attach`, `_detach`, and mux/connection shutdown as a single-threaded control stream:
+
+- it MUST NOT begin a new `_attach` or `_detach` for a given mux while a previous `_attach` / `_detach` / shutdown sequence is still in flight; and
+- in particular, no second `_attach` may call `prepare_attach()` between the `prepare_attach()` and `activate_attachment()` calls for the first `_attach` on that mux.
+
+This per-session serialization is required to make the `_attach` acknowledgment/activation transaction deterministic from the external client's point of view. Other operations (for example, `_swarm_status`, `_agent_detail`, and ordinary agent-directed prompts) MAY be processed concurrently as long as they respect the mux's open/closed and attachment invariants.
+
+
 ---
 
 ## 2. Error Codes (Logical)
@@ -193,6 +201,14 @@ Here `mux.abort_attachment(prepared)` represents any token-aware cleanup that di
 
 
 6. `activate_attachment(prepared)` starts the forwarding task and releases the forwarding gate.
+
+
+If the external session is already attached to `agent_id` and the mux's forwarding task for that agent is healthy, `_attach` is **idempotent**:
+
+- `prepare_attach(agent_id)` returns a `PreparedAttachment` handle that refers to the existing `_Attachment`; and
+- `activate_attachment(prepared)` verifies identity and returns without restarting forwarding or creating a second subscription.
+
+This guarantees that repeated `_attach` requests for the same healthy agent do not duplicate forwarding work or disrupt the existing stream.
 
 **Logical response payload (on success):**
 

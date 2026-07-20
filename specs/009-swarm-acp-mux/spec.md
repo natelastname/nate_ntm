@@ -273,8 +273,10 @@ Behavior:
 1. verify that the mux is open;
 2. validate the agent against durable swarm membership;
 3. serialize the lifecycle transition with `_lifecycle_lock`;
-4. return the existing attachment when the same healthy agent is already attached;
-5. completely detach the previous attachment;
+4. if the same agent is already attached and its forwarding task is healthy:
+   - do not create a new subscription or forwarding task; and
+   - return a `PreparedAttachment` whose token refers to the existing `_Attachment`, so that `activate_attachment()` becomes a no-op;
+5. otherwise, completely detach any previous attachment;
 6. call `subscribe_acp_updates(agent_id)`;
 7. enter the returned async context manager;
 8. retain the concrete subscription and iterator;
@@ -312,8 +314,8 @@ Behavior:
 
 1. verify that the mux remains open;
 2. verify that `prepared` still identifies the current attachment;
-3. start the forwarding task;
-4. release its forwarding gate.
+3. if the associated `_Attachment`'s forwarding task is not yet running, start it and release its forwarding gate;
+4. if the forwarding task is already running and healthy, treat this call as an idempotent no-op.
 
 Calling this method with a stale or replaced handle must fail without activating anything.
 
@@ -322,13 +324,20 @@ The normal adapter flow is:
 ```
 prepared = await mux.prepare_attach(agent_id)
 
-await external_connection.send_attach_acknowledgment(
-    session_id=external_session_id,
-    agent_id=agent_id,
-)
+try:
+    await external_connection.send_attach_acknowledgment(
+        session_id=external_session_id,
+        agent_id=agent_id,
+    )
+except BaseException:
+    # MUST discard the prepared attachment without activating it
+    await mux.abort_attachment(prepared)  # or equivalent token-aware abort
+    raise
 
 await mux.activate_attachment(prepared)
 ```
+
+Here `mux.abort_attachment(prepared)` represents any token-aware cleanup that discards the prepared attachment if and only if it is still current; an implementation MAY encode this into `detach()` or another internal helper. The externally visible requirement is that a failed acknowledgment leaves the mux open and unattached, with no forwarding task started for the failed attachment.
 
 This split makes acknowledgment-before-replay an implementable guarantee rather than a scheduling assumption.
 
@@ -344,11 +353,18 @@ async def attach(
     acknowledge: Callable[[str], Awaitable[None]],
 ) -> None:
     prepared = await self.prepare_attach(agent_id)
-    await acknowledge(agent_id)
+
+    try:
+        await acknowledge(agent_id)
+    except BaseException:
+        # MUST discard the prepared attachment without activating it
+        await self.abort_attachment(prepared)  # or equivalent token-aware abort
+        raise
+
     await self.activate_attachment(prepared)
 ```
 
-There must not be a convenience method that launches forwarding before acknowledgment.
+Any such helper MUST provide acknowledgment-failure cleanup equivalent to the pattern above. There must not be a convenience method that launches forwarding before acknowledgment or that leaves a prepared attachment live when acknowledgment fails.
 
 ### 8.4 detach
 
@@ -524,30 +540,46 @@ When forwarding to the external connection fails:
 
 The outer swarm ACP server adapter owns the external connection lifetime.
 
-It must run inbound request processing and mux failure monitoring under structured concurrency.
+It must run inbound request processing and mux failure monitoring as a **first-completion race** under structured concurrency.
 
 Conceptually:
 
 ```
-async with SwarmACPMux(…) as mux:
-    async with asyncio.TaskGroup() as tasks:
-        tasks.create_task(
-            serve_external_requests(mux),
-            name="swarm-acp-inbound”,
-        )
-        tasks.create_task(
-            mux.wait_failed(),
-            name="swarm-acp-forwarding-watch”,
-        )
+async with SwarmACPMux(...) as mux:
+    inbound = asyncio.create_task(
+        serve_external_requests(mux),
+        name="swarm-acp-inbound",
+    )
+    failure = asyncio.create_task(
+        mux.wait_failed(),
+        name="swarm-acp-forwarding-watch",
+    )
+
+    done, pending = await asyncio.wait(
+        {inbound, failure},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+
+    # Cancel whichever side did not win the race.
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+
+    # Propagate error, if any, from the winner.
+    for task in done:
+        task.result()
+
+    # After the race completes (successfully or with error),
+    # the adapter tears down the concrete ACP transport.
 ```
 
-If inbound processing fails, forwarding is cancelled.
+If inbound processing fails or is cancelled, the race is won by `serve_external_requests(mux)`; the failure watcher is cancelled, and connection cleanup proceeds.
 
-If outbound forwarding fails, inbound processing is cancelled.
+If `wait_failed()` completes with an exception, the race is won by the forwarding watcher; inbound processing is cancelled, and the same connection cleanup proceeds.
 
-The adapter then closes the mux and external connection.
+If inbound processing completes normally (for example, because the external client closed the session cleanly), the race still completes and the failure watcher is cancelled; cleanup then runs in the same way.
 
-This is the required meaning of “forwarding failures propagate to the outer connection handler.”
+This is the required meaning of “forwarding failures propagate to the outer connection handler,” and it ensures that neither normal completion of inbound processing nor forwarding failures can leave the adapter hanging indefinitely.
 
 ------------------------------------------------------------------------
 
@@ -555,11 +587,17 @@ This is the required meaning of “forwarding failures propagate to the outer co
 
 `prepare_attach()`, `activate_attachment()`, `detach()`, and `close()` mutate shared connection-local state.
 
-These transitions must be serialized by `_lifecycle_lock`.
+For each external ACP session, the swarm ACP server adapter MUST treat `_attach`, `_detach`, and mux/connection shutdown as a single-threaded control stream:
+
+- it must not begin a new `_attach` or `_detach` for a given mux while a previous `_attach` / `_detach` / shutdown sequence is still in flight; and
+- in particular, no second `_attach` may call `prepare_attach()` between the `prepare_attach()` and `activate_attachment()` calls for the first `_attach` on that mux.
+
+This per-session serialization at the adapter layer is required to make the acknowledgment/activation transaction observable and deterministic from the client's perspective.
+
+Within that constraint, these transitions must still be serialized by `_lifecycle_lock`.
 
 The implementation must behave deterministically when:
 
-- two attachments are requested concurrently;
 - detach races with attachment;
 - close races with attachment;
 - an old forwarding task finishes after a new attachment has been prepared.
