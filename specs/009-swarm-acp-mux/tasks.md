@@ -222,43 +222,48 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
 
 **Priority**: P2
 
-**Goal**: The production Swarm ACP server adapter exposes `_swarm_status`, `_agent_detail`, `_attach`, and `_detach` as reserved controls and maps domain failures to stable logical error codes.
+**Goal**: The production Swarm ACP session layer exposes `_swarm_status`, `_agent_detail`, `_attach`, and `_detach` with the required logical semantics. Ordinary reserved controls use the logical dispatcher, while `_attach` uses the explicit acknowledgment-aware attachment transaction so that its success response can be written before forwarding begins.
 
-**Independent Test**: Through the production adapter, reserved controls return the contract-defined payloads and errors, and no underscore-prefixed client control is forwarded to an agent.
+**Independent Test**: Through the production session surface, reserved controls return the contract-defined payloads and errors, `_attach` preserves acknowledgment-before-forwarding ordering, and no underscore-prefixed client control is forwarded to an agent.
 
 ### Tests for User Story 2
 
-- [ ] T016 [P] [US2] Add mux view tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
+- [x] T016 [P] [US2] Add mux view tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
 
   - `get_swarm_status()` returns daemon-owned status plus `attached_agent_id`;
   - `get_agent_detail()` returns daemon-owned detail plus the connection-local `attached` flag;
   - unknown agents raise `UnknownAgentError`;
   - `max_events` is passed through unchanged.
 
-- [ ] T017 [US2] Add production adapter routing and error-mapping tests to `tests/unit/runtime/test_swarm_acp_server.py` covering:
+- [x] T017 [US2] Add production session routing and error-mapping tests to `tests/unit/runtime/test_swarm_acp_server.py` covering:
 
   - `_swarm_status`;
   - `_agent_detail`;
-  - `_attach`;
   - `_detach`;
+  - `_attach` through the explicit acknowledgment-aware attachment API;
+  - rejection of attempts to process `_attach` as an ordinary return-value control;
   - malformed reserved requests;
   - unknown reserved operation names;
   - reserved operations never reaching the attached agent;
   - underscore-prefixed output emitted by an agent being forwarded normally;
-  - stable mappings for all logical `MUX_*` codes in the contract.
+  - stable mappings for all logical `MUX_*` codes in the contract;
+  - acknowledgment completing before any retained or live update is forwarded.
 
 ### Implementation for User Story 2
 
 - [x] T018 [US2] Implement `get_swarm_status()` and `get_agent_detail()` in `src/nate_ntm/runtime/swarm_acp_mux.py` using the daemon-owned views and response shapes defined in `specs/009-swarm-acp-mux/contracts/swarm-acp-mux-session.md` §§3.1–3.2.
-- [ ] T019 [US2] Complete reserved-control parsing and dispatch in `src/nate_ntm/runtime/swarm_acp_server.py`:
+- [x] T019 [US2] Complete reserved-control parsing and session dispatch in `src/nate_ntm/runtime/swarm_acp_server.py`:
 
-  - validate request payloads;
-  - dispatch `_swarm_status`, `_agent_detail`, `_attach`, and `_detach`;
+  - validate reserved-control request payloads;
+  - dispatch `_swarm_status`, `_agent_detail`, and `_detach` through `handle_reserved_control()`;
+  - expose `_attach` through the explicit `attach(…, acknowledge=…)` transaction rather than as an ordinary return-value control;
+  - require the concrete ACP adapter to write the `_attach` success response from the acknowledgment callback before activation;
+  - reject attempts to process `_attach` through `handle_reserved_control()`;
   - reject unknown underscore-prefixed controls;
   - never route reserved client controls to an agent;
   - leave underscore-prefixed agent output untouched.
 
-- [ ] T020 [US2] Implement the complete domain-to-protocol error mapping in `src/nate_ntm/runtime/swarm_acp_server.py` for:
+- [x] T020 [US2] Implement complete domain-to-logical-error-code mapping in `src/nate_ntm/runtime/swarm_acp_server.py` for:
 
   - `MUX_NO_ATTACHED_AGENT`;
   - `MUX_CLOSED`;
@@ -268,10 +273,17 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
   - `MUX_INVALID_REQUEST`;
   - `MUX_INTERNAL_ERROR`.
 
-  Log unexpected internal failures without exposing internal details to the external client.
-- [ ] T021 [US2] Add reserved-control integration coverage in `tests/integration/acp/test_reserved_swarm_controls.py` using `src/nate_ntm/runtime/swarm_acp_server.py`. Verify the contract-defined payloads, idempotent detach, same-agent attachment behavior, and logical error codes through the production dispatch path.
+  Log unexpected internal failures without exposing internal details to the external client. Construction of the concrete ACP wire-level error envelope remains the responsibility of the concrete ACP adapter.
+- [x] T021 [US2] Add reserved-control and attachment-transaction integration coverage in `tests/integration/acp/test_reserved_swarm_controls.py` using `src/nate_ntm/runtime/swarm_acp_server.py`. Verify:
 
-------------------------------------------------------------------------
+  - contract-defined `_swarm_status` and `_agent_detail` payloads;
+  - idempotent `_detach`;
+  - same-agent attachment behavior through `SwarmACPServerSession.attach(…)`;
+  - acknowledgment-before-forwarding semantics;
+  - logical error-code mapping;
+  - preservation of independent Epic 008 stream subscribers.
+
+  This test operates at the production session boundary. Concrete ACP wire decoding, response encoding, and transport-level ordering are covered by the later concrete-adapter integration work.
 
 ## Phase 4: User Story 3 — Connection Lifetime, Races, and Failure Propagation
 

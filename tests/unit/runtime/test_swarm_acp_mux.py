@@ -73,15 +73,39 @@ class _FakeSwarmState:
 
 
 class _FakeDaemon:
-    """Minimal daemon stub exposing durable swarm membership.
+    """Minimal daemon stub exposing durable swarm membership and views.
 
     The mux validates durable membership via ``daemon.swarm_state.agents``
-    but does not otherwise depend on :class:`RuntimeDaemon` for US1
-    behaviour.
+    and, for US2, reuses ``get_swarm_status`` and ``get_agent_detail`` to
+    implement mux-level views without depending on the real
+    :class:`RuntimeDaemon` implementation.
     """
 
-    def __init__(self, agent_ids: Iterable[str] = ()) -> None:
+    def __init__(
+        self,
+        agent_ids: Iterable[str] = (),
+        *,
+        swarm_status: dict[str, object] | None = None,
+        agent_details: dict[str, dict[str, object]] | None = None,
+    ) -> None:
         self.swarm_state = _FakeSwarmState(agents={aid: object() for aid in agent_ids})
+        self._swarm_status = swarm_status or {}
+        self._agent_details = agent_details or {}
+        self.max_events_calls: list[tuple[str, int]] = []
+
+    def get_swarm_status(self) -> dict[str, object]:
+        return self._swarm_status
+
+    def get_agent_detail(self, *, agent_id: str, max_events: int) -> dict[str, object]:
+        self.max_events_calls.append((agent_id, max_events))
+        detail = self._agent_details[agent_id]
+        # Apply the max_events cap to the events list while preserving
+        # identity for the ``agent`` payload.
+        events = detail.get("events", [])
+        return {
+            "agent": detail["agent"],
+            "events": events[:max_events],
+        }
 
 
 class _FakeAgentClient:
@@ -171,6 +195,104 @@ async def _anext_with_timeout(it: AsyncIterator[ReceivedSessionUpdate], timeout:
 
 
 # ---------------------------------------------------------------------------
+# T016 [US2] Mux view tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_swarm_status_returns_daemon_status_and_attached_agent_id() -> None:
+    agent_id = "agent-1"
+    swarm_status = {"status": "ok"}
+
+    agent_client = _FakeAgentClient()
+    stream = AcpSessionUpdateStream()
+    agent_client.add_agent(agent_id, stream=stream)
+    daemon = _FakeDaemon(agent_ids=[agent_id], swarm_status=swarm_status)
+    external = _FakeExternalConnection()
+
+    mux = SwarmACPMux(
+        daemon=daemon,  # type: ignore[arg-type]
+        agent_client=agent_client,
+        external_connection=external,
+        external_session_id="session-1",
+    )
+
+    # Before any attachment, the mux should report no attached agent.
+    status_before = mux.get_swarm_status()
+    assert status_before == {"attached_agent_id": None, "swarm": swarm_status}
+
+    # After attachment, the attached_agent_id field must reflect the
+    # mux-local attachment while preserving the underlying swarm view.
+    prepared = await mux.prepare_attach(agent_id)
+    await mux.activate_attachment(prepared)
+
+    status_after = mux.get_swarm_status()
+    assert status_after == {"attached_agent_id": agent_id, "swarm": swarm_status}
+
+    await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_get_agent_detail_returns_daemon_detail_and_attached_flag_and_preserves_max_events() -> None:
+    agent_id = "agent-1"
+    agent_detail = {
+        "agent": {"agent_id": agent_id},
+        "events": ["e1", "e2", "e3", "e4"],
+    }
+
+    agent_client = _FakeAgentClient()
+    stream = AcpSessionUpdateStream()
+    agent_client.add_agent(agent_id, stream=stream)
+    daemon = _FakeDaemon(agent_ids=[agent_id], agent_details={agent_id: agent_detail})
+    external = _FakeExternalConnection()
+
+    mux = SwarmACPMux(
+        daemon=daemon,  # type: ignore[arg-type]
+        agent_client=agent_client,
+        external_connection=external,
+        external_session_id="session-1",
+    )
+
+    # With no attachment, `attached` should be False and max_events should
+    # be forwarded unchanged to the daemon.
+    detail_before = mux.get_agent_detail(agent_id, max_events=2)
+    assert detail_before["attached"] is False
+    assert detail_before["agent"] is agent_detail["agent"]
+    assert detail_before["events"] == agent_detail["events"][:2]
+    assert daemon.max_events_calls == [(agent_id, 2)]
+
+    # After attachment, `attached` should be True. Use a different
+    # max_events value and ensure it is passed through unchanged.
+    prepared = await mux.prepare_attach(agent_id)
+    await mux.activate_attachment(prepared)
+
+    detail_after = mux.get_agent_detail(agent_id, max_events=3)
+    assert detail_after["attached"] is True
+    assert detail_after["agent"] is agent_detail["agent"]
+    assert detail_after["events"] == agent_detail["events"][:3]
+    assert daemon.max_events_calls == [(agent_id, 2), (agent_id, 3)]
+
+    await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_get_agent_detail_unknown_agent_raises_unknown_agent_error() -> None:
+    agent_client = _FakeAgentClient()
+    external = _FakeExternalConnection()
+    daemon = _FakeDaemon(agent_ids=["agent-1"], agent_details={})
+
+    mux = SwarmACPMux(
+        daemon=daemon,  # type: ignore[arg-type]
+        agent_client=agent_client,
+        external_connection=external,
+        external_session_id="session-1",
+    )
+
+    with pytest.raises(UnknownAgentError):
+        mux.get_agent_detail("missing-agent")
+
+    await mux.close()
+
 # T004 [US1] Attachment transaction tests
 # ---------------------------------------------------------------------------
 
@@ -689,5 +811,142 @@ async def test_detach_exits_only_mux_subscription_and_preserves_independent_subs
         u2 = _publish(stream, "u2")
         received2 = await _anext_with_timeout(independent_updates)
         assert received2.update is u2
+
+    await mux.close()
+
+
+# ---------------------------------------------------------------------------
+# T016 [US2] Mux views: swarm status and agent detail
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_swarm_status_wraps_daemon_status_and_attached_agent_id() -> None:
+    agent_client = _FakeAgentClient()
+    agent_client.add_agent("agent-1", stream=AcpSessionUpdateStream())
+    external = _FakeExternalConnection()
+
+    swarm_status = {"swarm_id": "default", "value": 1}
+    daemon = _FakeDaemon(agent_ids=["agent-1"], swarm_status=swarm_status)
+
+    mux = SwarmACPMux(
+        daemon=daemon,  # type: ignore[arg-type]
+        agent_client=agent_client,
+        external_connection=external,
+        external_session_id="session-1",
+    )
+
+    # Unattached: attached_agent_id is None, daemon status is passed through.
+    status = mux.get_swarm_status()
+    assert status["attached_agent_id"] is None
+    assert status["swarm"] is swarm_status
+
+    # After attaching to agent-1, attached_agent_id reflects the connection-
+    # local attachment while leaving the underlying swarm view unchanged.
+    prepared = await mux.prepare_attach("agent-1")
+    await mux.activate_attachment(prepared)
+
+    attached_status = mux.get_swarm_status()
+    assert attached_status["attached_agent_id"] == "agent-1"
+    assert attached_status["swarm"] is swarm_status
+
+    await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_get_agent_detail_returns_daemon_detail_and_attached_flag() -> None:
+    agent_client = _FakeAgentClient()
+    agent_client.add_agent("agent-1", stream=AcpSessionUpdateStream())
+    external = _FakeExternalConnection()
+
+    agent_payload = {"agent_id": "agent-1", "display_name": "Agent 1"}
+    events = ["e1", "e2"]
+    daemon = _FakeDaemon(
+        agent_ids=["agent-1"],
+        agent_details={"agent-1": {"agent": agent_payload, "events": events}},
+    )
+
+    mux = SwarmACPMux(
+        daemon=daemon,  # type: ignore[arg-type]
+        agent_client=agent_client,
+        external_connection=external,
+        external_session_id="session-1",
+    )
+
+    # Unattached: attached=False but the agent detail and events are passed
+    # through from the daemon's view.
+    detail = mux.get_agent_detail("agent-1")
+    assert detail["attached"] is False
+    assert detail["agent"] is agent_payload
+    assert detail["events"] == events
+
+    # After attaching to agent-1, the attached flag flips to True while the
+    # underlying detail remains the daemon-owned payload.
+    prepared = await mux.prepare_attach("agent-1")
+    await mux.activate_attachment(prepared)
+
+    attached_detail = mux.get_agent_detail("agent-1")
+    assert attached_detail["attached"] is True
+    assert attached_detail["agent"] is agent_payload
+    assert attached_detail["events"] == events
+
+    await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_get_agent_detail_unknown_agent_raises_unknown_agent_error() -> None:
+    agent_client = _FakeAgentClient()
+    external = _FakeExternalConnection()
+
+    # Daemon knows about agent-1 only.
+    daemon = _FakeDaemon(
+        agent_ids=["agent-1"],
+        agent_details={"agent-1": {"agent": {"agent_id": "agent-1"}, "events": []}},
+    )
+
+    mux = SwarmACPMux(
+        daemon=daemon,  # type: ignore[arg-type]
+        agent_client=agent_client,
+        external_connection=external,
+        external_session_id="session-1",
+    )
+
+    with pytest.raises(UnknownAgentError):
+        mux.get_agent_detail("missing-agent")
+
+    await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_get_agent_detail_passes_max_events_through_unchanged() -> None:
+    agent_client = _FakeAgentClient()
+    external = _FakeExternalConnection()
+
+    events = ["e1", "e2", "e3", "e4", "e5"]
+    daemon = _FakeDaemon(
+        agent_ids=["agent-1"],
+        agent_details={"agent-1": {"agent": {"agent_id": "agent-1"}, "events": events}},
+    )
+
+    mux = SwarmACPMux(
+        daemon=daemon,  # type: ignore[arg-type]
+        agent_client=agent_client,
+        external_connection=external,
+        external_session_id="session-1",
+    )
+
+    # Default max_events value.
+    default_detail = mux.get_agent_detail("agent-1")
+    # Explicit override.
+    limited_detail = mux.get_agent_detail("agent-1", max_events=3)
+
+    # The daemon must observe both calls with the unchanged max_events
+    # values from the mux API.
+    assert daemon.max_events_calls == [("agent-1", 100), ("agent-1", 3)]
+
+    # The returned events list is bounded by the max_events limit in each
+    # case.
+    assert default_detail["events"] == events  # len(events) < 100
+    assert limited_detail["events"] == events[:3]
 
     await mux.close()
