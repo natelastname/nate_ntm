@@ -1,4 +1,4 @@
-"""JSON-RPC client helpers for the runtime control API."""
+"""JSON-RPC HTTP client for the runtime control API."""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .jsonrpc import JSONRPC_VERSION
 from .models import AgentDetailResult, RuntimeStatusResult, SwarmOverviewResult
+
+JSONRPC_VERSION = "2.0"
 
 
 class JsonRpcClientError(RuntimeError):
@@ -68,9 +69,7 @@ class JsonRpcHttpClient:
             finally:
                 connection.close()
             if response.status != 200:
-                raise RuntimeError(
-                    f"HTTP {response.status} {response.reason}: {raw}"
-                )
+                raise RuntimeError(f"HTTP {response.status} {response.reason}: {raw}")
             return json.loads(raw)
 
         return await asyncio.to_thread(request)
@@ -104,10 +103,7 @@ class JsonRpcHttpClient:
 
     async def get_agent_detail(self, agent_id: str) -> AgentDetailResult:
         return AgentDetailResult.model_validate(
-            await self.call_for_result(
-                "agent.get_detail",
-                {"agent_id": agent_id},
-            )
+            await self.call_for_result("agent.get_detail", {"agent_id": agent_id})
         )
 
 
