@@ -27,4 +27,9 @@ from acp import schema as acp_schema
 # compatible with additional update variants.
 SessionUpdate = acp_schema.BaseModel
 
-__all__ = ["SessionUpdate"]
+# Typed notification model used when forwarding updates to external ACP
+# clients via the concrete Swarm ACP server adapter. This wraps a concrete
+# ``SessionUpdate`` together with the ACP session identifier.
+SessionNotification = acp_schema.SessionNotification
+
+__all__ = ["SessionUpdate", "SessionNotification"]

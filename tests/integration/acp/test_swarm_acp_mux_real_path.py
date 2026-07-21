@@ -118,6 +118,48 @@ class _RecordingExternalConnection(ExternalACPConnection):  # type: ignore[misc]
             await asyncio.wait_for(_wait(), timeout=timeout)
 
 
+
+
+class _FailingRecordingExternal(ExternalACPConnection):  # type: ignore[misc]
+    """Recording connection that can be instructed to fail forwarding.
+
+    Until ``fail_now`` is set, this behaves like
+    :class:`_RecordingExternalConnection`, recording all forwarded updates.
+    Once ``fail_now`` is set, any subsequent :meth:`session_update` call
+    raises a synthetic forwarding failure. This allows integration tests to
+    trigger a real-path forwarding failure without introducing alternative
+    telemetry paths.
+    """
+
+    def __init__(self) -> None:  # pragma: no cover - trivial initialiser
+        self.calls: list[tuple[str, SessionUpdate]] = []
+        self._cond = asyncio.Condition()
+        self.fail_now: asyncio.Event = asyncio.Event()
+        self.failures: list[BaseException] = []
+
+    async def session_update(self, *, session_id: str, update: SessionUpdate) -> None:
+        async with self._cond:
+            if self.fail_now.is_set():
+                exc = RuntimeError("synthetic real-path forwarding failure")
+                self.failures.append(exc)
+                raise exc
+
+            self.calls.append((session_id, update))
+            self._cond.notify_all()
+
+    async def wait_for_calls(self, count: int, timeout: float = 1.0) -> None:
+        """Wait until at least ``count`` calls have been recorded."""
+
+        async with self._cond:
+            if len(self.calls) >= count:
+                return
+
+            async def _wait() -> None:
+                while len(self.calls) < count:
+                    await self._cond.wait()
+
+            await asyncio.wait_for(_wait(), timeout=timeout)
+
 def _make_config(tmp_path: Path) -> RuntimeConfig:
     project = tmp_path / "project"
     project.mkdir(parents=True, exist_ok=True)
@@ -321,3 +363,225 @@ async def test_swarm_acp_mux_real_path_minimal(tmp_path: Path) -> None:
         # `close()` are serialised by `_control_lock`. Exercise the
         # adapter's `close()` method rather than closing the mux directly.
         await server_session.close()
+
+
+# ---------------------------------------------------------------------------
+# T024 [US3] Macro real-path scenario: attach, switch, failure, and cleanup
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_swarm_acp_mux_real_path_switch_and_forwarding_failure(tmp_path: Path) -> None:
+    """Macro real-path scenario across two agents with forwarding failure.
+
+    This scenario exercises the production Swarm ACP server adapter and mux
+    using the real Epic 008 streaming path for two agents, A and B. It
+    validates that:
+
+    * the connection attaches to agent A and receives A's retained and live
+      updates via the mux;
+    * prompt and interrupt are routed to the currently attached agent;
+    * switching to agent B stops forwarding A's subsequent output;
+    * B's retained history is replayed before B's live output;
+    * an injected forwarding failure on the external connection causes the
+      mux to report a failure; and
+    * the outer connection handler terminates and cleans up while both
+      agents remain runtime-managed by :class:`NateOhaAcpClient`.
+    """
+
+    config = _make_config(tmp_path)
+    acp_client = NateOhaAcpClient(config=config)
+
+    agent_a = "agent-A"
+    agent_b = "agent-B"
+
+    # Create two synthetic live AcpAgentSession instances with real
+    # AcpSessionUpdateStream objects, mirroring the Epic 008 setup.
+    session_a = AcpAgentSession(
+        agent_id=agent_a,
+        conversation_id="conv-A",
+        process=object(),
+        connection=object(),
+        protocol_client=object(),
+        status="running",
+        stderr_task=None,
+        exit_monitor_task=None,
+    )
+    session_b = AcpAgentSession(
+        agent_id=agent_b,
+        conversation_id="conv-B",
+        process=object(),
+        connection=object(),
+        protocol_client=object(),
+        status="running",
+        stderr_task=None,
+        exit_monitor_task=None,
+    )
+
+    acp_client._sessions[agent_a] = session_a  # type: ignore[attr-defined]
+    acp_client._sessions[agent_b] = session_b  # type: ignore[attr-defined]
+
+    stream_a = session_a.update_stream
+    stream_b = session_b.update_stream
+
+    daemon = _FakeDaemon(agent_ids=[agent_a, agent_b])
+    external = _FailingRecordingExternal()
+
+    server_session = SwarmACPServerSession(
+        daemon=daemon,  # type: ignore[arg-type]
+        agent_client=acp_client,  # type: ignore[arg-type]
+        external_connection=external,  # type: ignore[arg-type]
+        external_session_id="external-1",
+    )
+
+    # Patch prompt/interrupt to record per-agent calls without performing
+    # any real ACP I/O.
+    prompt_calls: list[tuple[str, str | None]] = []
+    interrupt_calls: list[str] = []
+
+    async def fake_prompt(agent: str, prompt: str | None = None) -> str | None:
+        prompt_calls.append((agent, prompt))
+        return f"reply:{agent}:{prompt}"
+
+    async def fake_interrupt(agent: str) -> None:
+        interrupt_calls.append(agent)
+
+    acp_client.prompt = fake_prompt  # type: ignore[assignment]
+    acp_client.interrupt = fake_interrupt  # type: ignore[assignment]
+
+    replies: list[str | None] = []
+
+    async def serve_inbound(sess: SwarmACPServerSession) -> None:
+        assert sess is server_session
+
+        # ---------------------------
+        # Attach to agent A
+        # ---------------------------
+
+        pre_a1 = _publish(stream_a, "A_pre1")
+        pre_a2 = _publish(stream_a, "A_pre2")
+
+        ack_a_called = asyncio.Event()
+
+        async def acknowledge_a(attached_id: str) -> None:
+            assert attached_id == agent_a
+            # Publish a live update while forwarding is still gated; this
+            # must appear after the retained history for A.
+            mid_a = _publish(stream_a, "A_mid")
+            assert mid_a is not None
+            ack_a_called.set()
+
+        await sess.attach(agent_a, acknowledge=acknowledge_a)
+        assert ack_a_called.is_set()
+
+        # After attachment completes, the external connection should have
+        # seen A's retained and mid-attachment updates.
+        await external.wait_for_calls(3)
+        forwarded = [u for (_sid, u) in external.calls]
+        assert forwarded[0] is pre_a1
+        assert forwarded[1] is pre_a2
+        assert getattr(forwarded[2], "label", None) == "A_mid"
+
+        # A live update after attachment flows through normally.
+        live_a1 = _publish(stream_a, "A_live1")
+        await external.wait_for_calls(4)
+        assert external.calls[3][1] is live_a1
+
+        # Prompt and interrupt should target agent A.
+        reply_a = await sess.prompt("hello-A")
+        replies.append(reply_a)
+        await sess.interrupt()
+
+        # ---------------------------
+        # Switch to agent B
+        # ---------------------------
+
+        pre_b1 = _publish(stream_b, "B_pre1")
+        pre_b2 = _publish(stream_b, "B_pre2")
+        assert pre_b1 is not None and pre_b2 is not None
+
+        ack_b_called = asyncio.Event()
+
+        async def acknowledge_b(attached_id: str) -> None:
+            assert attached_id == agent_b
+            # As with A, publish a mid-ack update that must be replayed
+            # before B's post-ack live output.
+            mid_b = _publish(stream_b, "B_mid")
+            assert mid_b is not None
+            ack_b_called.set()
+
+        await sess.attach(agent_b, acknowledge=acknowledge_b)
+        assert ack_b_called.is_set()
+
+        # Immediately after switching to B, A's subsequent output must no
+        # longer be forwarded.
+        _publish(stream_a, "A_post_switch")
+
+        # B live output after attachment should appear after B's retained
+        # history and mid-ack update.
+        live_b1 = _publish(stream_b, "B_live1")
+
+        # Give the mux a moment to deliver the new B output.
+        await external.wait_for_calls(7)
+        labels = [getattr(u, "label", None) for (_sid, u) in external.calls]
+
+        # Expected A sequence.
+        assert labels[0:4] == ["A_pre1", "A_pre2", "A_mid", "A_live1"]
+
+        # B's retained+mid sequence must precede B_live1.
+        assert labels[4:7] == ["B_pre1", "B_pre2", "B_mid"]
+
+        # No A output published after the switch may be forwarded.
+        assert "A_post_switch" not in labels
+
+        # Prompt and interrupt should now target agent B.
+        reply_b = await sess.prompt("hello-B")
+        replies.append(reply_b)
+        await sess.interrupt()
+
+        # ---------------------------
+        # Inject a forwarding failure while attached to B
+        # ---------------------------
+
+        external.fail_now.set()
+        _publish(stream_b, "B_fail")
+
+        # Block until cancelled by the connection-lifetime race.
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            # The adapter's run_connection helper is expected to cancel
+            # inbound processing when forwarding fails.
+            raise
+
+    close_called = asyncio.Event()
+
+    async def close_transport() -> None:
+        close_called.set()
+
+    # Run the connection to first completion: the forwarding failure should
+    # win the race and terminate the handler.
+    with pytest.raises(RuntimeError) as exc_info:
+        await server_session.run_connection(serve_inbound, close_transport=close_transport)
+
+    assert "synthetic real-path forwarding failure" in str(exc_info.value)
+    assert external.failures, "Expected at least one recorded forwarding failure"
+
+    # Prompt/interrupt routing must have targeted the correct agents.
+    assert prompt_calls == [(agent_a, "hello-A"), (agent_b, "hello-B")]
+    assert interrupt_calls == [agent_a, agent_b]
+    assert replies == [f"reply:{agent_a}:hello-A", f"reply:{agent_b}:hello-B"]
+
+    # The adapter must have closed the per-session mux and invoked the
+    # transport-close callback exactly once.
+    assert close_called.is_set()
+    assert server_session.mux._closed is True  # type: ignore[attr-defined]
+
+    # Both agents remain runtime-managed by the ACP client.
+    persisted_a = acp_client._sessions.get(agent_a)  # type: ignore[attr-defined]
+    persisted_b = acp_client._sessions.get(agent_b)  # type: ignore[attr-defined]
+    assert persisted_a is session_a
+    assert persisted_b is session_b
+    assert persisted_a.status in {"starting", "running"}
+    assert persisted_b.status in {"starting", "running"}
+

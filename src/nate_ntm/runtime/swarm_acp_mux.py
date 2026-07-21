@@ -17,6 +17,7 @@ connection-scoped.
 """
 
 import asyncio
+import logging
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Protocol, Callable, Awaitable, TYPE_CHECKING
@@ -26,6 +27,9 @@ from .acp_update_stream import ReceivedSessionUpdate, AgentSessionNotActive
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard for type checking
     from .daemon import RuntimeDaemon
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +269,15 @@ class SwarmACPMux:
                 and not current.task.done()
             ):
                 # Idempotent same-agent attach for a healthy attachment.
+                logger.info(
+                    "mux_prepare",
+                    extra={
+                        "external_session_id": self.external_session_id,
+                        "agent_id": agent_id,
+                        "idempotent": True,
+                        "previous_agent_id": agent_id,
+                    },
+                )
                 return PreparedAttachment(
                     agent_id=agent_id,
                     token=current,
@@ -276,11 +289,31 @@ class SwarmACPMux:
             # old forwarding is stopped before the new attachment is
             # acknowledged (spec §§7, 8.1, 16.3).
             previous = self._pop_attachment_for_detach()
+            previous_agent_id = previous.agent_id if previous is not None else None
 
         # Perform any required cleanup for the previous attachment outside
         # the lock to avoid deadlocks with the forwarding task.
         if previous is not None:
+            logger.info(
+                "mux_prepare",
+                extra={
+                    "external_session_id": self.external_session_id,
+                    "agent_id": agent_id,
+                    "idempotent": False,
+                    "previous_agent_id": previous_agent_id,
+                },
+            )
             await self._cleanup_attachment(previous)
+        else:
+            logger.info(
+                "mux_prepare",
+                extra={
+                    "external_session_id": self.external_session_id,
+                    "agent_id": agent_id,
+                    "idempotent": False,
+                    "previous_agent_id": None,
+                },
+            )
 
         # Establish a new subscription for ``agent_id``.
         cm = self.agent_client.subscribe_acp_updates(agent_id)
@@ -335,22 +368,35 @@ class SwarmACPMux:
             if attachment is None or not self._attachment_matches_token(prepared.token):
                 raise StaleAttachmentError("PreparedAttachment is no longer current")
 
+            started_new_task = False
+
             # If a forwarding task already exists and is healthy, treat this
             # as an idempotent no-op.
             if attachment.task is not None and not attachment.task.done():
                 # Ensure the forwarding gate is open in case it was not yet
                 # released. ``Event.set()`` is idempotent.
                 attachment.forwarding_enabled.set()
-                return
+            else:
+                # Start a new forwarding task for this attachment.
+                loop = asyncio.get_running_loop()
+                task = loop.create_task(self._run_forwarding(attachment))
+                attachment.task = task
+                started_new_task = True
 
-            # Start a new forwarding task for this attachment.
-            loop = asyncio.get_running_loop()
-            task = loop.create_task(self._run_forwarding(attachment))
-            attachment.task = task
             # Release the forwarding gate so that retained+live updates can
             # begin flowing only after acknowledgment (which has already
             # happened by the time this method is called).
             attachment.forwarding_enabled.set()
+            agent_id = attachment.agent_id
+
+        logger.info(
+            "mux_activate",
+            extra={
+                "external_session_id": self.external_session_id,
+                "agent_id": agent_id,
+                "started_new_task": started_new_task,
+            },
+        )
 
     async def abort_attachment(self, prepared: PreparedAttachment) -> None:
         """Abort a prepared attachment after acknowledgment failure.
@@ -423,7 +469,24 @@ class SwarmACPMux:
             attachment = self._pop_attachment_for_detach()
 
         if attachment is not None:
+            logger.info(
+                "mux_detach",
+                extra={
+                    "external_session_id": self.external_session_id,
+                    "agent_id": attachment.agent_id,
+                    "no_op": False,
+                },
+            )
             await self._cleanup_attachment(attachment)
+        else:
+            logger.info(
+                "mux_detach",
+                extra={
+                    "external_session_id": self.external_session_id,
+                    "agent_id": None,
+                    "no_op": True,
+                },
+            )
 
     # ------------------------------------------------------------------
     # Public API: agent-directed operations and views
@@ -521,6 +584,14 @@ class SwarmACPMux:
 
         async with self._lifecycle_lock:
             if self._closed:
+                logger.info(
+                    "mux_close",
+                    extra={
+                        "external_session_id": self.external_session_id,
+                        "already_closed": True,
+                        "last_agent_id": self.attached_agent_id,
+                    },
+                )
                 return
 
             self._closed = True
@@ -530,6 +601,15 @@ class SwarmACPMux:
             # itself as a failure.
             if not self._failure.done():
                 self._failure.cancel()
+
+        logger.info(
+            "mux_close",
+            extra={
+                "external_session_id": self.external_session_id,
+                "already_closed": False,
+                "last_agent_id": getattr(attachment, "agent_id", None) if attachment is not None else None,
+            },
+        )
 
         if attachment is not None:
             await self._cleanup_attachment(attachment)
@@ -571,7 +651,7 @@ class SwarmACPMux:
                         update=received.update,
                     )
                 except Exception as exc:  # pragma: no cover - exercised via integration tests
-                    self._report_failure(exc)
+                    self._report_failure(exc, attachment)
                     raise
         except asyncio.CancelledError:
             # Cancellation from ``detach`` / ``close`` is treated as
@@ -579,14 +659,21 @@ class SwarmACPMux:
             # failure.
             raise
         except Exception as exc:  # pragma: no cover - exercised via integration tests
-            self._report_failure(exc)
+            self._report_failure(exc, attachment)
             raise
         finally:
             # Natural exhaustion or fatal failure: perform identity-safe
             # cleanup. When an obsolete attachment completes after a
             # newer one has been installed, ``_attachment_finished`` is a
             # no-op.
-            await self._attachment_finished(attachment)
+            #
+            # The cleanup runs in a separate task so that we never try to
+            # ``await`` the forwarding task from within itself, which would
+            # prevent its exception from being retrieved cleanly. The
+            # ``_cleanup_attachment`` helper swallows any fatal forwarding
+            # errors after they have been recorded via ``_report_failure``.
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._attachment_finished(attachment))
 
     async def _attachment_finished(self, attachment: _Attachment) -> None:
         """Clear mux state if ``attachment`` is still current and exit its subscription.
@@ -651,7 +738,7 @@ class SwarmACPMux:
             # observe them via logs rather than surfaced exceptions.
             pass
 
-    def _report_failure(self, exc: BaseException) -> None:
+    def _report_failure(self, exc: BaseException, attachment: _Attachment | None = None) -> None:
         """Record the first fatal forwarding failure, if any.
 
         A fatal failure includes:
@@ -667,6 +754,16 @@ class SwarmACPMux:
             return
 
         self._failure.set_exception(exc)
+
+        logger.error(
+            "mux_forwarding_failed",
+            extra={
+                "external_session_id": self.external_session_id,
+                "agent_id": attachment.agent_id if attachment is not None else self.attached_agent_id,
+                "exception_type": type(exc).__name__,
+            },
+            exc_info=exc,
+        )
 
 
 __all__ = [

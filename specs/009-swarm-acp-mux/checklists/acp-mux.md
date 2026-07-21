@@ -8,40 +8,48 @@
 
 ## Scope & Non-Goals
 
-- [ ] CHK001 Are SwarmACPMux responsibilities and boundaries explicitly documented (what it owns vs. what remains in the daemon, ACP client, and transport), including non-goals such as not owning ACP framing, replay policy, or persistence? [Completeness, Spec §1, §17]
-- [ ] CHK002 Do the non-goals clearly prevent future contributors from extending SwarmACPMux to own ACP transport, replay buffers, or swarm-wide attachment persistence, except via an explicit spec change? [Clarity, Spec §17]
+- [x] CHK001 Are SwarmACPMux responsibilities and boundaries explicitly documented (what it owns vs. what remains in the daemon, ACP client, and transport), including non-goals such as not owning ACP framing, replay policy, or persistence? [Completeness, Spec §1, §17]
+- [x] CHK002 Do the non-goals clearly prevent future contributors from extending SwarmACPMux to own ACP transport, replay buffers, or swarm-wide attachment persistence, except via an explicit spec change? [Clarity, Spec §17]
 
 ## Typed ACP Streams & Telemetry Separation
 
-- [ ] CHK003 Is it explicitly required that SwarmACPMux consumes typed ACP updates exclusively via `subscribe_acp_updates()` and `AcpSessionUpdateStream`, with no alternate path via `AgentEvent` telemetry or ad-hoc queues? [Coverage, Spec §3, §5]
-- [ ] CHK004 Do the requirements clearly state that the mux forwards the underlying `SessionUpdate` unchanged to the external ACP session, and that `ReceivedSessionUpdate` metadata (sequence, timestamps) affects only internal behavior (ordering, diagnostics) and not the on-the-wire payload? [Clarity, Spec §9, §15]
-- [ ] CHK005 Is there a requirement that no second ACP buffer or subscription system is introduced by SwarmACPMux beyond the Epic 008 `AcpSessionUpdateStream`, and that any future buffering changes must occur in the Epic 008 layer instead? [Consistency, Spec §15.14]
+- [x] CHK003 Is it explicitly required that SwarmACPMux consumes typed ACP updates exclusively via `subscribe_acp_updates()` and `AcpSessionUpdateStream`, with no alternate path via `AgentEvent` telemetry or ad-hoc queues? [Coverage, Spec §3, §5]
+- [x] CHK004 Do the requirements clearly state that the mux forwards the underlying `SessionUpdate` unchanged to the external ACP session, and that `ReceivedSessionUpdate` metadata (sequence, timestamps) affects only internal behavior (ordering, diagnostics) and not the on-the-wire payload? [Clarity, Spec §9, §15]
+- [x] CHK005 Is there a requirement that no second ACP buffer or subscription system is introduced by SwarmACPMux beyond the Epic 008 `AcpSessionUpdateStream`, and that any future buffering changes must occur in the Epic 008 layer instead? [Consistency, Spec §15.14]
 
 ## Attachment & Lifecycle Semantics
 
-- [ ] CHK006 Are the three attachment stages—`prepare_attach`, external `_attach` acknowledgment, and `activate_attachment`—described in a way that makes the intended ordering and responsibilities (mux vs. adapter) unambiguous? [Clarity, Spec §8.1–§8.3]
-- [ ] CHK007 Do the requirements explicitly state what must happen when `prepare_attach()` fails (including `AgentSessionNotActive`), in particular that no success acknowledgment may be sent and that the mux remains unattached? [Completeness, Spec §8.1, §16.1]
-- [ ] CHK008 Are all lifecycle transitions that mutate mux state (attach, detach, close, activation) documented together with their concurrency guarantees (e.g., serialized under `_lifecycle_lock`, deterministic outcomes for races)? [Consistency, Spec §11, §15]
-- [ ] CHK009 Is the role of `PreparedAttachment.token` (or equivalent identity) in preventing stale acknowledgments from activating obsolete attachments explicitly captured as a requirement, with references to expected failure behavior (`StaleAttachmentError`)? [Clarity, Spec §8.1–§8.3, §13]
+- [x] CHK006 Are the three attachment stages—`prepare_attach`, external `_attach` acknowledgment, and `activate_attachment`—described in a way that makes the intended ordering and responsibilities (mux vs. adapter) unambiguous? [Clarity, Spec §8.1–§8.3]
+- [x] CHK007 Do the requirements explicitly state what must happen when `prepare_attach()` fails (including `AgentSessionNotActive`), in particular that no success acknowledgment may be sent and that the mux remains unattached? [Completeness, Spec §8.1, §16.1]
+- [x] CHK008 Are all lifecycle transitions that mutate mux state (attach, detach, close, activation) documented together with their concurrency guarantees (e.g., serialized under `_lifecycle_lock`, deterministic outcomes for races)? [Consistency, Spec §11, §15]
+- [x] CHK009 Is the role of `PreparedAttachment.token` (or equivalent identity) in preventing stale acknowledgments from activating obsolete attachments explicitly captured as a requirement, with references to expected failure behavior (`StaleAttachmentError`)? [Clarity, Spec §8.1–§8.3, §13]
 
 ## Reserved Controls & External Contract
 
-- [ ] CHK010 Are the semantics, request parameters, and response shapes for reserved operations `_swarm_status`, `_agent_detail`, `_attach`, and `_detach` fully specified, including how they relate to existing runtime control API views (swarm status and agent detail)? [Completeness, Spec §7–§8, Contracts]
-- [ ] CHK011 Do the requirements clearly separate reserved swarm-control operations from ordinary agent-directed traffic, so that reserved ops never appear as prompts, tool calls, or messages inside the agent conversation? [Coverage, Spec §7, §16.8]
-- [ ] CHK012 Is the mapping from mux/domain errors (e.g., unknown agent, no attached agent, stale attachment, unsupported reserved operation) to stable, protocol-level error codes documented or at least constrained so that adapters cannot invent incompatible mappings per integration? [Consistency, Spec §13, Contracts]
+- [x] CHK010 Are the semantics, request parameters, and response shapes for reserved operations `_swarm_status`, `_agent_detail`, `_attach`, and `_detach` fully specified, including how they relate to existing runtime control API views (swarm status and agent detail)? [Completeness, Spec §7–§8, Contracts]
+- [x] CHK011 Do the requirements clearly separate reserved swarm-control operations from ordinary agent-directed traffic, so that reserved ops never appear as prompts, tool calls, or messages inside the agent conversation? [Coverage, Spec §7, §16.8]
+- [x] CHK012 Is the mapping from mux/domain errors (e.g., unknown agent, no attached agent, stale attachment, unsupported reserved operation) to stable, protocol-level error codes documented or at least constrained so that adapters cannot invent incompatible mappings per integration? [Consistency, Spec §13, Contracts]
 
 ## Failure & Concurrency Invariants
 
-- [ ] CHK013 Are all required invariants for attachment, detachment, stream closure, and failure handling enumerated in one place (e.g., the invariants section), with enough detail that tests can trace each invariant to specific spec text? [Completeness, Spec §15, §16]
-- [ ] CHK014 Do the requirements clearly distinguish normal behaviors (e.g., clean ACP stream exhaustion, detach/cancel) from fatal forwarding failures, and specify exactly which cases must be surfaced via `wait_failed()` vs. which must not? [Clarity, Spec §9, §14]
-- [ ] CHK015 Are race conditions explicitly covered—for concurrent attaches, detach vs. attach, close vs. attach, and completion of an old forwarding task after a new attachment—together with the required final state in each case? [Coverage, Spec §11, §15, §16.6]
-- [ ] CHK016 Is multi-subscriber behavior clearly specified so that detaching the mux does not affect independent subscribers to the same `AcpSessionUpdateStream`, and are edge cases (e.g., simultaneous detach and external stream closure) addressed in the requirements or called out as future work? [Coverage, Spec §6, §9, §16.5]
+- [x] CHK013 Are all required invariants for attachment, detachment, stream closure, and failure handling enumerated in one place (e.g., the invariants section), with enough detail that tests can trace each invariant to specific spec text? [Completeness, Spec §15, §16]
+- [x] CHK014 Do the requirements clearly distinguish normal behaviors (e.g., clean ACP stream exhaustion, detach/cancel) from fatal forwarding failures, and specify exactly which cases must be surfaced via `wait_failed()` vs. which must not? [Clarity, Spec §9, §14]
+- [x] CHK015 Are race conditions explicitly covered—for concurrent attaches, detach vs. attach, close vs. attach, and completion of an old forwarding task after a new attachment—together with the required final state in each case? [Coverage, Spec §11, §15, §16.6]
+- [x] CHK016 Is multi-subscriber behavior clearly specified so that detaching the mux does not affect independent subscribers to the same `AcpSessionUpdateStream`, and are edge cases (e.g., simultaneous detach and external stream closure) addressed in the requirements or called out as future work? [Coverage, Spec §6, §9, §16.5]
 
 ## Documentation & Cross-Spec Alignment
 
-- [ ] CHK017 Are references to Epic 008 typed ACP streaming (replay, ordering, overflow semantics) consistent with the Epic 008 spec, and does SwarmACPMux explicitly delegate those concerns rather than redefining them? [Consistency, Spec §2–§3, Epic 008]
-- [ ] CHK018 Are uses of swarm and agent views in `_swarm_status` and `_agent_detail` aligned with the runtime control API (spec 001), including field names and meanings, so that there is a single source of truth for these shapes? [Traceability, Spec §8.7–§8.8, Spec 001]
-- [ ] CHK019 Does the combination of spec, plan, contracts, and quickstart clearly cover all scenario classes enumerated in the tests section (attachment establishment, acknowledgment ordering, switching agents, request forwarding, multiple subscribers, lifecycle, failure propagation, reserved controls, and macro integration), without leaving any class without corresponding requirements text? [Coverage, Spec §16, Plan/Contracts/Quickstart]
+- [x] CHK017 Are references to Epic 008 typed ACP streaming (replay, ordering, overflow semantics) consistent with the Epic 008 spec, and does SwarmACPMux explicitly delegate those concerns rather than redefining them? [Consistency, Spec §2–§3, Epic 008]
+- [x] CHK018 Are uses of swarm and agent views in `_swarm_status` and `_agent_detail` aligned with the runtime control API (spec 001), including field names and meanings, so that there is a single source of truth for these shapes? [Traceability, Spec §8.7–§8.8, Spec 001]
+- [x] CHK019 Does the combination of spec, plan, contracts, and quickstart clearly cover all scenario classes enumerated in the tests section (attachment establishment, acknowledgment ordering, switching agents, request forwarding, multiple subscribers, lifecycle, failure propagation, reserved controls, and macro integration), without leaving any class without corresponding requirements text? [Coverage, Spec §16, Plan/Contracts/Quickstart]
+
+## US3: Connection Lifetime, Logging, and Adapter Integration
+
+- [x] CHK020 Is the structured connection lifetime for one external ACP session (first-completion race between inbound serving and `mux.wait_failed()`, cancellation and awaiting of the losing task, and deterministic mux/transport shutdown) specified clearly and referenced from the adapter surface? [Clarity, Spec §10, Tasks T023–T025]
+- [x] CHK021 Do the US3 requirements for lifetime orchestration and failure propagation preserve the canonical telemetry path through `AcpSessionUpdateStream` / `ReceivedSessionUpdate` and forbid any alternative forwarding or notification paths that bypass `SwarmACPMux`? [Consistency, Spec §3, Contracts §4, Quickstart §3]
+- [x] CHK022 Are lifecycle logging requirements for `SwarmACPMux` and `SwarmACPServerSession` documented so that logging is **observational only** (no behavior changes), includes external session and agent identifiers, records fatal forwarding failures exactly once, and avoids duplicate tracebacks for expected cancellation and clean shutdown? [Coverage, Tasks T027, Tasks §US3]
+- [x] CHK023 Does the US3 Addendum (T027.1–T027.2) define a single concrete Swarm ACP request adapter and transport-level integration tests that exercise the same mux/session semantics and canonical telemetry path, without introducing test-only adapters or alternate telemetry pipelines, and while preserving all US1/US2 behaviors (attachment ordering, reserved controls, error-code mapping)? [Traceability, Tasks T019, T027.1–T027.2, Quickstart §2–§4]
+
 
 ## Notes
 

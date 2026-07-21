@@ -295,7 +295,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
 
 ### Tests for User Story 3
 
-- [ ] T022 [P] [US3] Add mux lifecycle race tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
+- [x] T022 [P] [US3] Add mux lifecycle race tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
 
   - detach racing with attachment;
   - close racing with attachment;
@@ -305,7 +305,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
   - first-failure-only behavior;
   - clean cancellation of `wait_failed()` during close.
 
-- [ ] T023 [US3] Add production adapter lifetime tests to `tests/unit/runtime/test_swarm_acp_server.py` covering:
+- [x] T023 [US3] Add production adapter lifetime tests to `tests/unit/runtime/test_swarm_acp_server.py` covering:
 
   - normal inbound completion cancels the failure watcher;
   - a forwarding failure cancels inbound processing;
@@ -314,7 +314,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
   - cleanup closes the mux and transport;
   - `_attach`, `_detach`, and shutdown never overlap for one external session.
 
-- [ ] T024 [US3] Extend `tests/integration/acp/test_swarm_acp_mux_real_path.py` with one macro scenario that:
+- [x] T024 [US3] Extend `tests/integration/acp/test_swarm_acp_mux_real_path.py` with one macro scenario that:
 
   - attaches to agent A;
   - receives retained and live updates;
@@ -328,7 +328,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
 
 ### Implementation for User Story 3
 
-- [ ] T025 [US3] Implement the first-completion connection lifetime in `src/nate_ntm/runtime/swarm_acp_server.py`:
+- [x] T025 [US3] Implement the first-completion connection lifetime in `src/nate_ntm/runtime/swarm_acp_server.py`:
 
   - race inbound request processing against `mux.wait_failed()`;
   - cancel and await the loser;
@@ -336,20 +336,38 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
   - treat normal inbound completion as connection termination;
   - always close the mux and concrete external transport.
 
-- [ ] T026 [US3] Enforce the single-threaded per-session control stream in `src/nate_ntm/runtime/swarm_acp_server.py`:
+- [x] T026 [US3] Enforce the single-threaded per-session control stream in `src/nate_ntm/runtime/swarm_acp_server.py`:
 
   - no second `_attach` or `_detach` begins while an attachment transaction is in flight;
   - shutdown cannot interleave between `prepare_attach()` and `activate_attachment()`;
   - ordinary prompt and interrupt requests may proceed only according to the adapter concurrency rules established by the ACP SDK integration.
 
-- [ ] T027 [US3] Finalize lifecycle logging in `src/nate_ntm/runtime/swarm_acp_mux.py` and `src/nate_ntm/runtime/swarm_acp_server.py`:
+- [x] T027 [US3] Finalize lifecycle logging in `src/nate_ntm/runtime/swarm_acp_mux.py` and `src/nate_ntm/runtime/swarm_acp_server.py`:
 
   - record attachment preparation, activation, switching, detach, and close at useful levels;
   - log fatal forwarding failures exactly once;
   - include agent and external-session identifiers needed for diagnosis;
   - avoid duplicate tracebacks for expected cancellation and normal shutdown.
 
-------------------------------------------------------------------------
+### US3: Addendum
+
+- [ ] T027.1 [US3] Implement the concrete Swarm ACP request adapter in `src/nate_ntm/runtime/swarm_acp_server.py`:
+  - decode inbound ACP requests for `_swarm_status`, `_agent_detail`, `_attach`, and `_detach`;
+  - route ordinary reserved controls through `SwarmACPServerSession.handle_reserved_control()`;
+  - route `_attach` through `SwarmACPServerSession.attach(…, acknowledge=…)`;
+  - write the `_attach` success response from the acknowledgment callback before attachment activation;
+  - map logical `MUX_*` codes into concrete ACP protocol errors;
+  - route ordinary prompt and interrupt requests to the attached agent;
+  - forward agent session updates through the ACP connection;
+  - close the session deterministically when inbound processing, forwarding, or the connection fails.
+
+- [ ] T027.2 [US3] Add macro-level ACP adapter integration tests in `tests/integration/acp/test_swarm_acp_server_transport.py` using the real ACP transport and production server adapter. Verify:
+  - reserved request decoding and response encoding;
+  - `_attach` success response is observed before retained or live agent updates;
+  - ordinary prompts and interrupts reach only the attached agent;
+  - switching and detaching change routing correctly;
+  - logical mux failures become the expected ACP protocol errors;
+  - connection shutdown leaves no forwarding tasks or subscriptions active.
 
 ## Phase 5: Conformance and Final Validation
 

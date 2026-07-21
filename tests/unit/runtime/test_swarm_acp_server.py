@@ -388,3 +388,170 @@ async def test_underscore_prefixed_agent_output_is_forwarded_unchanged() -> None
 
     assert getattr(forwarded[0], "label", None) == "_looks_like_reserved"
     assert getattr(forwarded[1], "label", None) == "normal"
+
+
+# ---------------------------------------------------------------------------
+# T023 [US3] Adapter lifetime and first-completion race
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_connection_normal_inbound_completion_cancels_failure_watcher_and_closes_mux_and_transport() -> None:
+    """Normal inbound completion wins the race and cancels the watcher.
+
+    When inbound processing completes successfully, the failure watcher must be
+    cancelled and awaited, the mux must be closed, and the concrete transport
+    close callback must be invoked exactly once.
+    """
+
+    session = _make_session(durable_agents={})
+
+    # Start an independent failure watcher so we can observe its cancellation
+    # behaviour when the connection shuts down.
+    external_watcher = asyncio.create_task(session.mux.wait_failed())
+    await asyncio.sleep(0)
+    assert not external_watcher.done()
+
+    inbound_calls: list[str] = []
+
+    async def serve_inbound(s: SwarmACPServerSession) -> None:
+        assert s is session
+        inbound_calls.append("start")
+        # Normal completion without error.
+
+    close_calls: list[str] = []
+
+    async def close_transport() -> None:
+        close_calls.append("closed")
+
+    await session.run_connection(serve_inbound, close_transport=close_transport)
+
+    assert inbound_calls == ["start"]
+
+    # After the connection ends, the mux must be closed and the transport
+    # close callback must have been invoked exactly once.
+    assert session.mux._closed is True  # type: ignore[attr-defined]
+    assert close_calls == ["closed"]
+
+    # ``wait_failed`` watchers must be cancelled when the mux is closed.
+    assert session.mux._failure.cancelled()  # type: ignore[attr-defined]
+    with pytest.raises(asyncio.CancelledError):
+        await external_watcher
+
+
+@pytest.mark.asyncio
+async def test_run_connection_inbound_failure_cancels_failure_watcher_and_closes_mux_and_transport() -> None:
+    """Inbound failure wins the race and cancels the watcher.
+
+    When inbound processing fails, its exception must be propagated, the
+    failure watcher must be cancelled and awaited, the mux closed, and the
+    transport close callback invoked.
+    """
+
+    session = _make_session(durable_agents={})
+
+    # Independent watcher to observe cancellation behaviour.
+    external_watcher = asyncio.create_task(session.mux.wait_failed())
+    await asyncio.sleep(0)
+    assert not external_watcher.done()
+
+    inbound_error = RuntimeError("inbound failure")
+
+    async def serve_inbound(s: SwarmACPServerSession) -> None:
+        assert s is session
+        raise inbound_error
+
+    close_calls: list[str] = []
+
+    async def close_transport() -> None:
+        close_calls.append("closed")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await session.run_connection(serve_inbound, close_transport=close_transport)
+
+    assert exc_info.value is inbound_error
+    assert session.mux._closed is True  # type: ignore[attr-defined]
+    assert close_calls == ["closed"]
+
+    # ``wait_failed`` watchers (including the independent one) must be
+    # cancelled when the mux is closed as part of connection teardown.
+    assert session.mux._failure.cancelled()  # type: ignore[attr-defined]
+    with pytest.raises(asyncio.CancelledError):
+        await external_watcher
+
+
+@pytest.mark.asyncio
+async def test_run_connection_forwarding_failure_cancels_inbound_and_closes_mux_and_transport() -> None:
+    """Forwarding failure wins the race and cancels inbound processing.
+
+    When forwarding to the external connection fails, the mux must report the
+    failure via :meth:`wait_failed`, run_connection must cancel inbound
+    processing, propagate the failure to the caller, close the mux, and invoke
+    the transport close callback.
+    """
+
+    agent_id = "agent-1"
+    stream = AcpSessionUpdateStream()
+    agent_client = _FakeAgentClient()
+    agent_client.add_agent(agent_id, stream=stream)
+
+    class _FailingExternal(_FakeExternalConnection):
+        def __init__(self) -> None:  # pragma: no cover - trivial initialiser
+            super().__init__()
+            self.failures: list[BaseException] = []
+
+        async def session_update(self, *, session_id: str, update: _DummyUpdate) -> None:  # type: ignore[override]
+            exc = RuntimeError("synthetic forwarding failure")
+            self.failures.append(exc)
+            raise exc
+
+    external = _FailingExternal()
+    session = _make_session(durable_agents={agent_id: object()}, agent_client=agent_client, external=external)
+
+    inbound_started = asyncio.Event()
+    inbound_cancelled = asyncio.Event()
+
+    async def serve_inbound(s: SwarmACPServerSession) -> None:
+        assert s is session
+        inbound_started.set()
+
+        async def acknowledge(attached_id: str) -> None:
+            assert attached_id == agent_id
+            # Immediate acknowledgment; no-op for the test.
+            return None
+
+        await s.attach(agent_id, acknowledge=acknowledge)
+
+        # Publish an update that will trigger a forwarding failure in the mux's
+        # forwarding task.
+        _publish(stream, "u1")
+
+        # Block until cancelled by run_connection.
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            inbound_cancelled.set()
+            raise
+
+    close_called = asyncio.Event()
+
+    async def close_transport() -> None:
+        close_called.set()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await session.run_connection(serve_inbound, close_transport=close_transport)
+
+    # The propagated error must be the synthetic forwarding failure raised by
+    # the external connection.
+    assert "synthetic forwarding failure" in str(exc_info.value)
+    assert external.failures, "Expected at least one recorded forwarding failure"
+
+    # Inbound processing must have started and then been cancelled by the
+    # run_connection race winner.
+    assert inbound_started.is_set()
+    assert inbound_cancelled.is_set()
+
+    # Cleanup must close both mux and transport.
+    assert close_called.is_set()
+    assert session.mux._closed is True  # type: ignore[attr-defined]
+

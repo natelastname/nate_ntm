@@ -37,6 +37,7 @@ from nate_ntm.runtime.acp_update_stream import (
 )
 from nate_ntm.runtime.swarm_acp_mux import (
     SwarmACPMux,
+    SwarmACPMuxClosedError,
     UnknownAgentError,
     NoAttachedAgentError,
     StaleAttachmentError,
@@ -949,4 +950,212 @@ async def test_get_agent_detail_passes_max_events_through_unchanged() -> None:
     assert default_detail["events"] == events  # len(events) < 100
     assert limited_detail["events"] == events[:3]
 
+
+
+# ---------------------------------------------------------------------------
+# T022 [US3] Mux lifecycle race and failure-propagation tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detach_racing_with_attachment_leaves_mux_in_consistent_state() -> None:
+    """Detach racing with attachment leaves the mux in a coherent state.
+
+    Even when `detach()` and an attachment transaction run concurrently, the
+    mux must end up either cleanly attached or cleanly detached with no
+    dangling subscribers.
+    """
+
+    agent_client = _FakeAgentClient()
+    stream = AcpSessionUpdateStream()
+    agent_client.add_agent("agent-1", stream=stream)
+    external = _FakeExternalConnection()
+    mux = _make_mux(durable_agents=["agent-1"], agent_client=agent_client, external=external)
+
+    async def attach_once() -> None:
+        prepared = await mux.prepare_attach("agent-1")
+        await mux.activate_attachment(prepared)
+
+    attach_task = asyncio.create_task(attach_once())
+    detach_task = asyncio.create_task(mux.detach())
+
+    # Allow both operations to run; either may "win" the race but the final
+    # state must be coherent.
+    await asyncio.gather(attach_task, detach_task, return_exceptions=True)
+
+    if mux.attached_agent_id is None:
+        # Fully detached: no current attachment and no subscribers owned by the
+        # mux.
+        assert mux._attachment is None  # type: ignore[attr-defined]
+        assert len(stream._subscribers) == 0  # type: ignore[attr-defined]
+    else:
+        # Still attached to agent-1: the internal attachment and subscriber
+        # state must be consistent.
+        assert mux.attached_agent_id == "agent-1"
+        attachment = mux._attachment  # type: ignore[attr-defined]
+        assert attachment is not None
+        assert attachment.agent_id == "agent-1"
+        assert len(stream._subscribers) == 1  # type: ignore[attr-defined]
+
     await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_close_racing_with_attachment_closes_and_detaches_mux() -> None:
+    """Close racing with attachment always leaves the mux closed and detached.
+
+    When `close()` runs concurrently with an attachment transaction, the
+    mux must end up closed with no active attachment or subscribers.
+    """
+
+    agent_client = _FakeAgentClient()
+    stream = AcpSessionUpdateStream()
+    agent_client.add_agent("agent-1", stream=stream)
+    external = _FakeExternalConnection()
+    mux = _make_mux(durable_agents=["agent-1"], agent_client=agent_client, external=external)
+
+    async def attach_once() -> None:
+        prepared = await mux.prepare_attach("agent-1")
+        await mux.activate_attachment(prepared)
+
+    attach_task = asyncio.create_task(attach_once())
+    close_task = asyncio.create_task(mux.close())
+
+    results = await asyncio.gather(attach_task, close_task, return_exceptions=True)
+
+    # The attachment side may observe a SwarmACPMuxClosedError if `close()`
+    # wins the race; no other exception type is expected.
+    for result in results:
+        if isinstance(result, Exception):
+            assert isinstance(result, SwarmACPMuxClosedError)
+
+    assert mux._closed is True  # type: ignore[attr-defined]
+    assert mux.attached_agent_id is None
+    assert mux._attachment is None  # type: ignore[attr-defined]
+    assert len(stream._subscribers) == 0  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_activation_after_detach_raises_stale_attachment_error() -> None:
+    """Activating a handle after detach treats it as stale.
+
+    A prepared attachment handle must become stale once `detach()` has cleared
+    the current attachment. Attempting to activate it raises
+    :class:`StaleAttachmentError`.
+    """
+
+    agent_client = _FakeAgentClient()
+    agent_client.add_agent("agent-1", stream=AcpSessionUpdateStream())
+    external = _FakeExternalConnection()
+    mux = _make_mux(durable_agents=["agent-1"], agent_client=agent_client, external=external)
+
+    prepared = await mux.prepare_attach("agent-1")
+
+    # Detach before activation, making `prepared` stale.
+    await mux.detach()
+    assert mux.attached_agent_id is None
+    assert mux._attachment is None  # type: ignore[attr-defined]
+
+    with pytest.raises(StaleAttachmentError):
+        await mux.activate_attachment(prepared)
+
+    await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_normal_stream_exhaustion_leaves_mux_open_and_unattached() -> None:
+    """Normal agent-stream exhaustion detaches without closing the mux.
+
+    When the underlying AcpSessionUpdateStream is closed without error, the
+    forwarding task should terminate naturally, leaving the mux open but
+    unattached so that a new attachment can be established.
+    """
+
+    agent_client = _FakeAgentClient()
+    stream = AcpSessionUpdateStream()
+    agent_client.add_agent("agent-1", stream=stream)
+    external = _FakeExternalConnection()
+    mux = _make_mux(durable_agents=["agent-1"], agent_client=agent_client, external=external)
+
+    prepared = await mux.prepare_attach("agent-1")
+    await mux.activate_attachment(prepared)
+
+    # Capture the current attachment and verify forwarding is active.
+    attachment = mux._attachment  # type: ignore[attr-defined]
+    assert attachment is not None and attachment.task is not None
+
+    u1 = _publish(stream, "u1")
+    await external.wait_for_calls(1)
+    assert external.calls[0][1] is u1
+
+    # Close the underlying stream to simulate normal agent termination.
+    stream.close()
+
+    # Wait for the forwarding task to observe exhaustion and finish.
+    await asyncio.wait_for(attachment.task, timeout=1.0)
+
+    # After exhaustion, the mux must be open but unattached.
+    assert mux._closed is False  # type: ignore[attr-defined]
+    assert mux.attached_agent_id is None
+    assert mux._attachment is None  # type: ignore[attr-defined]
+    assert len(stream._subscribers) == 0  # type: ignore[attr-defined]
+
+    # Natural exhaustion is not a fatal failure.
+    assert not mux._failure.done()  # type: ignore[attr-defined]
+
+    # A new attachment to the same agent, using a fresh underlying session
+    # stream, should succeed.
+    new_stream = AcpSessionUpdateStream()
+    agent_client.add_agent("agent-1", stream=new_stream)
+
+    prepared2 = await mux.prepare_attach("agent-1")
+    await mux.activate_attachment(prepared2)
+    u2 = _publish(new_stream, "u2")
+    await external.wait_for_calls(2)
+    assert external.calls[1][1] is u2
+
+    await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_first_failure_recorded_only_once() -> None:
+    """`_report_failure` must record only the first fatal error."""
+
+    agent_client = _FakeAgentClient()
+    external = _FakeExternalConnection()
+    mux = _make_mux(durable_agents=[], agent_client=agent_client, external=external)
+
+    err1 = RuntimeError("first")
+    err2 = RuntimeError("second")
+
+    mux._report_failure(err1)  # type: ignore[attr-defined]
+    mux._report_failure(err2)  # type: ignore[attr-defined]
+
+    assert mux._failure.done()  # type: ignore[attr-defined]
+    recorded = mux._failure.exception()  # type: ignore[attr-defined]
+    assert recorded is err1
+
+    await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_wait_failed_is_cancelled_cleanly_on_close() -> None:
+    """`wait_failed()` callers are cancelled, not failed, during `close()`."""
+
+    agent_client = _FakeAgentClient()
+    external = _FakeExternalConnection()
+    mux = _make_mux(durable_agents=[], agent_client=agent_client, external=external)
+
+    waiter = asyncio.create_task(mux.wait_failed())
+
+    # Ensure the waiter task has started and is blocked on the mux's internal
+    # failure future.
+    await asyncio.sleep(0)
+    assert not waiter.done()
+
+    await mux.close()
+
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    assert mux._failure.cancelled()  # type: ignore[attr-defined]
