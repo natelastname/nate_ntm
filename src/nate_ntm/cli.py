@@ -70,16 +70,12 @@ def runtime_start(
         dir_okay=False,
         resolve_path=True,
     ),
-    nate_oha_runtime_mode: str | None = typer.Option(
-        None, "--nate-oha-runtime-mode"
-    ),
+    nate_oha_runtime_mode: str | None = typer.Option(None, "--nate-oha-runtime-mode"),
     llm_model: str | None = typer.Option(None, "--llm-model"),
     llm_api_key: str | None = typer.Option(
         None, "--llm-api-key", envvar="NATE_NTM_LLM_API_KEY"
     ),
-    prompt_soul_content: str | None = typer.Option(
-        None, "--prompt-soul-content"
-    ),
+    prompt_soul_content: str | None = typer.Option(None, "--prompt-soul-content"),
     with_control_api: bool = typer.Option(False, "--with-control-api"),
 ) -> None:
     """Create or resume a swarm runtime."""
@@ -104,11 +100,7 @@ def runtime_start(
 
     try:
         if with_control_api:
-            run_runtime_with_control_api(
-                config,
-                startup_mode,
-                agent_count=agents,
-            )
+            run_runtime_with_control_api(config, startup_mode, agent_count=agents)
             return
 
         daemon = (
@@ -146,7 +138,7 @@ def api_call(
     method: str = typer.Argument(...),
     param: list[str] = typer.Option([], "--param", "-P"),  # type: ignore[assignment]
     host: str = typer.Option("127.0.0.1", "--host", envvar="NATE_NTM_CONTROL_HOST"),
-    port: int = typer.Option(8766, "--port", envvar="NATE_NTM_CONTROL_PORT"),
+    port: int = typer.Option(8765, "--port", envvar="NATE_NTM_CONTROL_PORT"),
 ) -> None:
     """Invoke one runtime control API method."""
 
@@ -175,7 +167,7 @@ def api_call(
 @app.command("console")
 def console(
     host: str = typer.Option("127.0.0.1", "--host", envvar="NATE_NTM_CONTROL_HOST"),
-    port: int = typer.Option(8766, "--port", envvar="NATE_NTM_CONTROL_PORT"),
+    port: int = typer.Option(8765, "--port", envvar="NATE_NTM_CONTROL_PORT"),
 ) -> None:
     """Launch the Textual runtime console."""
 
