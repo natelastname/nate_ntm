@@ -98,7 +98,7 @@ class RuntimeApiServer:
         :class:`RuntimeDaemon`.
         """
 
-        return self.daemon.get_swarm_overview()
+        return self.daemon.get_swarm_status()
 
     def shutdown_runtime(self, timeout_seconds: int = 30) -> Dict[str, Any]:
         """Request a graceful runtime shutdown for ``runtime.shutdown``.

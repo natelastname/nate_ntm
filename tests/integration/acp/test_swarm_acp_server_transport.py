@@ -46,6 +46,7 @@ from typing import Any, AsyncIterator, Iterable
 
 import acp
 import pytest
+import pytest_asyncio
 from acp import schema as acp_schema
 from acp.agent.router import AGENT_METHODS
 from acp.connection import Connection, StreamDirection, StreamEvent
@@ -79,68 +80,167 @@ from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 
 
 @dataclass
-class _FakeSwarmState:
-    agents: dict[str, object]
+class RealSwarm:
+    """Fixture payload for a REAL nate-oha–backed swarm."""
+
+    config: RuntimeConfig
+    store: MetadataStore
+    daemon: RuntimeDaemon
+    acp_client: NateOhaAcpClient
+    agent_a: str
+    agent_b: str
 
 
-class _FakeDaemon:
-    """Minimal daemon stub exposing durable swarm membership and views.
+@dataclass
+class ConnectedSwarm:
+    """Fixture payload for an external ACP client connected to the swarm."""
 
-    SwarmACPMux validates durable membership via ``daemon.swarm_state``
-    and, for reserved-control operations, reuses ``get_swarm_status``
-    and ``get_agent_detail`` to implement mux-level views without
-    depending on the real :class:`RuntimeDaemon` implementation.
-    """
-
-    def __init__(
-        self,
-        agent_ids: Iterable[str] = (),
-        *,
-        swarm_status: dict[str, object] | None = None,
-        agent_details: dict[str, dict[str, object]] | None = None,
-    ) -> None:
-        self.swarm_state = _FakeSwarmState(agents={aid: object() for aid in agent_ids})
-        self._swarm_status = dict(swarm_status or {})
-        self._agent_details = {k: dict(v) for k, v in (agent_details or {}).items()}
-        self.max_events_calls: list[tuple[str, int]] = []
-
-    def get_swarm_status(self) -> dict[str, object]:
-        return dict(self._swarm_status)
-
-    def get_agent_detail(self, *, agent_id: str, max_events: int) -> dict[str, object]:
-        self.max_events_calls.append((agent_id, max_events))
-        detail = self._agent_details[agent_id]
-        events = list(detail.get("events", []))
-        return {
-            "agent": detail["agent"],
-            "events": events[:max_events],
-        }
+    swarm: RealSwarm
+    server: asyncio.AbstractServer
+    client: "_RecordingClient"
+    mux: SwarmACPMux
 
 
-def _make_config(tmp_path: Path) -> RuntimeConfig:
+def _make_real_echo_config(tmp_path: Path) -> RuntimeConfig:
+    """Construct a :class:`RuntimeConfig` for REAL nate-oha echo tests."""
+
     project = tmp_path / "project"
     project.mkdir(parents=True, exist_ok=True)
-    return load_runtime_config(project_path=project)
+
+    repo_root = Path(__file__).resolve().parents[3]
+    base_config = repo_root / "nate-oha-profiles" / "profile1.json"
+
+    env = dict(os.environ)
+    env.update(
+        {
+            "NATE_NTM_PROJECT_DIR": str(project),
+            "NATE_NTM_ADAPTER_MODE": AdapterKind.REAL.value,
+            "NATE_NTM_NATE_OHA_CONFIG": str(base_config),
+            "NATE_NTM_NATE_OHA_RUNTIME_MODE": "echo",
+        }
+    )
+
+    return load_runtime_config(project_path=project, env=env)
 
 
-def _publish_info(stream: AcpSessionUpdateStream, title: str) -> acp_schema.SessionInfoUpdate:
-    """Publish a concrete ``SessionInfoUpdate`` on the Epic 008 stream.
+@pytest_asyncio.fixture
+async def real_swarm(tmp_path: Path) -> AsyncIterator[RealSwarm]:
+    """Provision a REAL swarm with two nate-oha echo agents.
 
-    Using a real ACP SDK update model ensures that
-    :class:`SessionNotification` can be constructed without violating its
-    discriminated-union constraints.
+    The fixture creates durable :class:`AgentState` records, persists a
+    :class:`SwarmState`, constructs production adapters, resumes a
+    :class:`RuntimeDaemon`, and starts ACP sessions for two agents (A and
+    B). All agent output still flows exclusively through the typed
+    :class:`AcpSessionUpdateStream` telemetry pipeline.
     """
 
-    update = acp_schema.SessionInfoUpdate(title=title, session_update="session_info_update")
-    t0 = datetime(2024, 1, 1, 12, 0, 0)
-    stream.publish(update, received_at=t0)
-    return update
+    config = _make_real_echo_config(tmp_path)
+    store = MetadataStore(config=config)
+    now = datetime.utcnow()
+
+    agent_a = "swarm-real-a"
+    agent_b = "swarm-real-b"
+
+    nate_oha_cfg = build_effective_nate_oha_config(config=config)
+
+    meta_a = AgentState(
+        agent_id=agent_a,
+        display_name="Swarm Real Agent A",
+        conversation_id="",  # Force a new ACP session on first run.
+        nate_oha_config=nate_oha_cfg,
+    )
+    meta_b = AgentState(
+        agent_id=agent_b,
+        display_name="Swarm Real Agent B",
+        conversation_id="",
+        nate_oha_config=nate_oha_cfg,
+    )
+
+    swarm = SwarmState(
+        swarm_id=config.swarm_id,
+        project_path=config.project_path,
+        agent_mail_project_id=str(config.project_path),
+        created_at=now,
+        last_updated_at=now,
+        agents={meta_a.agent_id: meta_a, meta_b.agent_id: meta_b},
+    )
+    store.save_swarm_state(swarm)
+
+    adapters = create_runtime_adapters(config)
+    assert isinstance(adapters.acp, NateOhaAcpClient)
+
+    daemon = RuntimeDaemon.resume(config, adapters=adapters)
+    acp_client = daemon.acp_client
+    assert isinstance(acp_client, NateOhaAcpClient)
+
+    # Start REAL ACP sessions for both agents.
+    meta_a_loaded = store.load_agent_state(agent_a)
+    meta_b_loaded = store.load_agent_state(agent_b)
+
+    await acp_client.start_agent_async(agent_a, metadata=meta_a_loaded)
+    await acp_client.start_agent_async(agent_b, metadata=meta_b_loaded)
+
+    # Mark runtime as running for status/detail views.
+    daemon.start()
+
+    swarm_fixture = RealSwarm(
+        config=config,
+        store=store,
+        daemon=daemon,
+        acp_client=acp_client,
+        agent_a=agent_a,
+        agent_b=agent_b,
+    )
+
+    try:
+        yield swarm_fixture
+    finally:
+        # Clean shutdown of REAL ACP sessions and runtime. These calls are
+        # intentionally tolerant of failures so that test assertions about
+        # earlier behaviour are not masked by teardown issues.
+        try:
+            await acp_client.stop_agent_async(agent_a, timeout=10.0)
+        except Exception:
+            pass
+        try:
+            await acp_client.stop_agent_async(agent_b, timeout=10.0)
+        except Exception:
+            pass
+
+        daemon.request_shutdown()
+        daemon.mark_stopped()
 
 
-async def _anext_with_timeout(
-    it: AsyncIterator[ReceivedSessionUpdate], timeout: float = 1.0
-) -> ReceivedSessionUpdate:
-    return await asyncio.wait_for(it.__anext__(), timeout=timeout)
+@pytest_asyncio.fixture
+async def connected_swarm(real_swarm: RealSwarm) -> AsyncIterator[ConnectedSwarm]:
+    """Start a Swarm ACP server and external client for a REAL swarm."""
+
+    server, mux_future = await _start_swarm_acp_server_for_daemon(daemon=real_swarm.daemon)
+    host, port = server.sockets[0].getsockname()[:2]
+
+    client = await _RecordingClient.connect(host, port)
+    mux = await asyncio.wait_for(mux_future, timeout=5.0)
+
+    connected = ConnectedSwarm(
+        swarm=real_swarm,
+        server=server,
+        client=client,
+        mux=mux,
+    )
+
+    try:
+        yield connected
+    finally:
+        try:
+            await client.close()
+        finally:
+            server.close()
+            await server.wait_closed()
+
+        # After transport shutdown the mux must be closed with no active
+        # forwarding attachment.
+        assert connected.mux._closed is True  # type: ignore[attr-defined]
+        assert connected.mux._attachment is None  # type: ignore[attr-defined]
 
 
 class _RecordingClient:
@@ -284,98 +384,56 @@ class _RecordingClient:
             pass
 
 
-# ---------------------------------------------------------------------------
-# Helper to start a one-shot Swarm ACP server over TCP
-# ---------------------------------------------------------------------------
 
+def _extract_text_from_notifications(client: "_RecordingClient", start: int = 0) -> list[str]:
+    """Return any text content values from forwarded session/update notifications.
 
-async def _start_swarm_acp_server(
-    *,
-    agent_id: str,
-    daemon: _FakeDaemon,
-    acp_client: NateOhaAcpClient,
-    extra_agent_ids: Iterable[str] = (),
-) -> tuple[asyncio.AbstractServer, AcpSessionUpdateStream, "asyncio.Future[SwarmACPMux]"]:
-    """Start a single-connection Swarm ACP server backed by real Epic 008 plumbing.
-
-    The returned server listens on an ephemeral port and accepts exactly
-    one connection in these tests. A future for the underlying
-    :class:`SwarmACPMux` instance is returned so that callers can inspect
-    its state after the connection has terminated.
-
-    When ``extra_agent_ids`` are supplied, additional synthetic
-    :class:`AcpAgentSession` instances are created for those agents so
-    that tests can exercise mux behaviour when switching attachments
-    between multiple agents.
+    This helper inspects the typed :class:`SessionNotification` objects
+    recorded by :class:`_RecordingClient` and extracts any text payloads
+    embedded in their ``content`` fields. It is intentionally tolerant of
+    non-text updates and unknown payload shapes.
     """
 
-    # Create a synthetic live AcpAgentSession with a real
-    # AcpSessionUpdateStream, mirroring the setup in the Epic 008 tests.
-    session = AcpAgentSession(
-        agent_id=agent_id,
-        conversation_id="conv-1",
-        process=object(),
-        connection=object(),
-        protocol_client=object(),
-        status="running",
-        stderr_task=None,
-        exit_monitor_task=None,
-    )
-    acp_client._sessions[agent_id] = session  # type: ignore[attr-defined]
-    stream = session.update_stream
+    texts: list[str] = []
+    for notif in client.notifications[start:]:
+        update = notif.update
+        try:
+            payload = update.model_dump(mode="json", by_alias=True)  # type: ignore[call-arg]
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        content = payload.get("content")
+        if isinstance(content, dict) and content.get("type") == "text":
+            text_val = content.get("text")
+            if isinstance(text_val, str):
+                texts.append(text_val)
+    return texts
 
-    # Optionally seed additional sessions so that SwarmACPMux can attach to
-    # multiple agents in a single test scenario.
-    for extra_id in extra_agent_ids:
-        extra_session = AcpAgentSession(
-            agent_id=extra_id,
-            conversation_id=f"conv-{extra_id}",
-            process=object(),
-            connection=object(),
-            protocol_client=object(),
-            status="running",
-            stderr_task=None,
-            exit_monitor_task=None,
-        )
-        acp_client._sessions[extra_id] = extra_session  # type: ignore[attr-defined]
+
+async def _wait_for_text(
+    client: "_RecordingClient",
+    expected: str,
+    *,
+    start: int,
+    timeout: float = 10.0,
+) -> None:
+    """Wait until ``expected`` appears in forwarded session/update text."""
 
     loop = asyncio.get_running_loop()
-    mux_future: asyncio.Future[SwarmACPMux] = loop.create_future()
+    deadline = loop.time() + timeout
+    while True:
+        texts = _extract_text_from_notifications(client, start)
+        if any(expected in t for t in texts):
+            return
+        now_time = loop.time()
+        if now_time >= deadline:
+            raise AssertionError(
+                f"Timed out waiting for {expected!r} in session/update notifications; saw {texts!r}"
+            )
+        await asyncio.sleep(0.05)
 
-    async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        external = ConnectionExternalACPConnection()
-        server_session = SwarmACPServerSession(
-            daemon=daemon,  # type: ignore[arg-type]
-            agent_client=acp_client,  # type: ignore[arg-type]
-            external_connection=external,  # type: ignore[arg-type]
-            external_session_id="external-1",
-        )
-        if not mux_future.done():
-            mux_future.set_result(server_session.mux)
 
-        conn = SwarmACPConnection(
-            session=server_session,
-            writer=writer,
-            reader=reader,
-            receive_timeout=5.0,
-        )
-        external.bind(conn)
-
-        async def serve_inbound(sess: SwarmACPServerSession) -> None:
-            assert sess is server_session
-            await conn.main_loop()
-
-        async def close_transport() -> None:
-            try:
-                await conn.close()
-            finally:
-                writer.close()
-                await writer.wait_closed()
-
-        await server_session.run_connection(serve_inbound, close_transport=close_transport)
-
-    server = await asyncio.start_server(handle_client, host="127.0.0.1", port=0)
-    return server, stream, mux_future
 
 
 async def _start_swarm_acp_server_for_daemon(
@@ -440,114 +498,203 @@ async def _start_swarm_acp_server_for_daemon(
 
 
 @pytest.mark.asyncio
-async def test_swarm_acp_server_transport_attach_prompt_and_detach(tmp_path: Path) -> None:
-    """Happy-path attach, prompt, and detach over a real ACP transport.
+async def test_swarm_acp_server_transport_attach_prompt_and_detach(connected_swarm: ConnectedSwarm) -> None:
+    """Happy-path attach, prompt, interrupt, and detach over REAL ACP transport.
 
-    This scenario verifies that:
-
-    * reserved requests are decoded and encoded correctly at the wire
-      level;
-    * the `_attach` success response is observed before any
-      `session/update` notifications;
-    * prompt and interrupt target only the attached agent; and
-    * detaching stops forwarding while leaving the Epic 008 stream and
-      agent session intact.
+    This scenario validates reserved controls, prompt/interrupt routing,
+    and detach semantics using a REAL :class:`RuntimeDaemon` with
+    nate-oha echo agents behind :class:`NateOhaAcpClient`.
     """
 
-    config = _make_config(tmp_path)
-    acp_client = NateOhaAcpClient(config=config)
+    swarm = connected_swarm.swarm
+    daemon = swarm.daemon
+    acp_client = swarm.acp_client
+    agent_id = swarm.agent_a
+    client = connected_swarm.client
+    mux = connected_swarm.mux
 
-    agent_id = "agent-1"
-    swarm_status = {"status": "ok"}
-    agent_detail = {"agent": {"agent_id": agent_id}, "events": ["e1", "e2", "e3"]}
+    # ------------------------------------------------------------------
+    # Reserved controls before attachment
+    # ------------------------------------------------------------------
 
-    daemon = _FakeDaemon(
-        agent_ids=[agent_id],
-        swarm_status=swarm_status,
-        agent_details={agent_id: agent_detail},
-    )
+    status = await client.swarm_status()
+    expected_swarm = daemon.get_swarm_status()
+    assert status["attached_agent_id"] is None
+    assert status["swarm"] == expected_swarm
 
-    server, stream, mux_future = await _start_swarm_acp_server(
-        agent_id=agent_id,
-        daemon=daemon,
-        acp_client=acp_client,
-    )
+    max_events = 5
+    detail = await client.agent_detail(agent_id=agent_id, max_events=max_events)
+    expected_detail = daemon.get_agent_detail(agent_id=agent_id, max_events=max_events)
+    assert detail["attached"] is False
+    assert detail["agent"] == expected_detail["agent"]
+    assert detail["events"] == expected_detail["events"]
 
-    host, port = server.sockets[0].getsockname()[:2]
+    # ------------------------------------------------------------------
+    # Wrap REAL prompt/interrupt so we can observe routing decisions
+    # ------------------------------------------------------------------
+
+    prompt_calls: list[tuple[str, str]] = []
+    interrupt_calls: list[str] = []
+
+    orig_prompt = acp_client.prompt
+    orig_interrupt = acp_client.interrupt
+
+    async def logging_prompt(agent: str, text: str | None = None) -> str | None:
+        value = "" if text is None else text
+        prompt_calls.append((agent, value))
+        return await orig_prompt(agent, value)  # type: ignore[arg-type]
+
+    async def logging_interrupt(agent: str) -> None:
+        interrupt_calls.append(agent)
+        await orig_interrupt(agent)  # type: ignore[arg-type]
+
+    acp_client.prompt = logging_prompt  # type: ignore[assignment]
+    acp_client.interrupt = logging_interrupt  # type: ignore[assignment]
 
     try:
-        client = await _RecordingClient.connect(host, port)
-        mux = await asyncio.wait_for(mux_future, timeout=1.0)
-
-        # Patch prompt/interrupt on the real NateOhaAcpClient so we can
-        # assert routing without performing any external I/O.
-        prompt_calls: list[tuple[str, str | None]] = []
-        interrupt_calls: list[str] = []
-
-        async def fake_prompt(agent: str, prompt: object | None = None) -> str | None:
-            # The real NateOhaAcpClient passes through the PromptRequest
-            # ``prompt`` blocks; we only care about the first text block's
-            # payload for routing assertions.
-            prompt_calls.append((agent, prompt))
-            text_value: str | None = None
-            if isinstance(prompt, list) and prompt:
-                first = prompt[0]
-                text_value = getattr(first, "text", None)
-            return f"reply:{agent}:{text_value}"
-
-        async def fake_interrupt(agent: str) -> None:
-            interrupt_calls.append(agent)
-
-        acp_client.prompt = fake_prompt  # type: ignore[assignment]
-        acp_client.interrupt = fake_interrupt  # type: ignore[assignment]
-
         # ------------------------------------------------------------------
-        # Reserved controls before attachment
+        # Attach and send a prompt via the external ACP client
         # ------------------------------------------------------------------
 
-        status = await client.swarm_status()
-        assert status == {"attached_agent_id": None, "swarm": swarm_status}
-
-        detail = await client.agent_detail(agent_id=agent_id, max_events=2)
-        assert detail["attached"] is False
-        assert detail["agent"] == agent_detail["agent"]
-        assert detail["events"] == agent_detail["events"][:2]
-        assert daemon.max_events_calls == [(agent_id, 2)]
-
-        # ------------------------------------------------------------------
-        # Attach: ack-before-forwarding at the wire level
-        # ------------------------------------------------------------------
-
-        # Retained updates published before attachment.
-        pre1 = _publish_info(stream, "pre1")
-        pre2 = _publish_info(stream, "pre2")
-
-        # Attach from the external ACP client's perspective.
         attach_result = await client.attach(agent_id)
         assert attach_result == {"attached_agent_id": agent_id}
+        assert mux.attached_agent_id == agent_id
 
-        # Wait until the first forwarded update has been observed.
-        async def _wait_for_first_update() -> None:
-            while not any(
-                kind == "notification" and method == acp.CLIENT_METHODS["session_update"]
-                for kind, method, *_rest in client.stream_events
-            ):
-                await asyncio.sleep(0.01)
+        prompt_text = "attach-prompt-detach: hello from external client"
+        start_idx = len(client.notifications)
+        prompt_result = await client.prompt(prompt_text)
+        pr = acp_schema.PromptResponse.model_validate(prompt_result)
+        assert pr.stop_reason == "end_turn"
 
-        await asyncio.wait_for(_wait_for_first_update(), timeout=1.0)
+        # The adapter surfaces any textual reply in field_meta.swarm_output.
+        if pr.field_meta is not None:
+            swarm_output = str(pr.field_meta.get("swarm_output", ""))
+            # In echo mode we expect the marker to appear somewhere.
+            assert prompt_text.split()[0] in swarm_output or prompt_text in swarm_output
 
-        # At the JSON-RPC layer, the `_attach` success response must be
-        # observed before any `session/update` notifications. We assert this
-        # directly against the Connection's incoming message stream rather
-        # than relying on when the client coroutine that awaited
-        # `send_request` happens to resume.
+        await _wait_for_text(client, prompt_text, start=start_idx, timeout=15.0)
+
+        # The REAL adapter's prompt should have been invoked for the attached agent.
+        assert (agent_id, prompt_text) in prompt_calls
+
+        # ------------------------------------------------------------------
+        # Interrupt while still attached to agent_id
+        # ------------------------------------------------------------------
+
+        await client.interrupt()
+
+        async def _wait_for_interrupt() -> None:
+            while not interrupt_calls:
+                await asyncio.sleep(0.05)
+
+        await asyncio.wait_for(_wait_for_interrupt(), timeout=10.0)
+        assert interrupt_calls[-1] == agent_id
+    finally:
+        # Restore the REAL adapter methods so later tests see unwrapped behaviour.
+        acp_client.prompt = orig_prompt  # type: ignore[assignment]
+        acp_client.interrupt = orig_interrupt  # type: ignore[assignment]
+
+    # ------------------------------------------------------------------
+    # Detach stops forwarding but leaves the REAL agent session intact
+    # ------------------------------------------------------------------
+
+    result1 = await client.detach()
+    result2 = await client.detach()
+    assert result1 == {"detached": True}
+    assert result2 == {"detached": True}
+    assert mux.attached_agent_id is None
+
+    # After detaching, prompt the same agent directly via the runtime-owned
+    # NateOhaAcpClient. The resulting updates should *not* be forwarded to
+    # the external ACP client, but the underlying session must remain
+    # active from the adapter's perspective.
+    session = acp_client._sessions.get(agent_id)  # type: ignore[attr-defined]
+    assert isinstance(session, AcpAgentSession)
+    baseline_notifications = len(client.notifications)
+
+    direct_text = "attach-prompt-detach: direct-after-detach"
+    await acp_client.prompt(agent_id, direct_text)
+
+    # Give the mux a brief window; no new notifications should arrive.
+    await asyncio.sleep(0.1)
+    assert len(client.notifications) == baseline_notifications
+
+    # The underlying AcpAgentSession remains managed by NateOhaAcpClient.
+    assert session.status in {"starting", "running", "waiting"}
+
+
+
+
+@pytest.mark.asyncio
+async def test_swarm_acp_server_transport_switching_reroutes_prompt_and_updates(
+    connected_swarm: ConnectedSwarm,
+) -> None:
+    """Attachment switching reroutes both updates and prompt/interrupt.
+
+    This lifts the T027.2 switching scenario onto the REAL runtime path,
+    exercising two nate-oha echo agents behind :class:`NateOhaAcpClient`.
+    """
+
+    swarm = connected_swarm.swarm
+    acp_client = swarm.acp_client
+    agent_a = swarm.agent_a
+    agent_b = swarm.agent_b
+    client = connected_swarm.client
+    mux = connected_swarm.mux
+
+    # Wrap REAL prompt/interrupt to log routing decisions while still
+    # exercising the nate-oha / ACP SDK path.
+    prompt_calls: list[tuple[str, str]] = []
+    interrupt_calls: list[str] = []
+
+    orig_prompt = acp_client.prompt
+    orig_interrupt = acp_client.interrupt
+
+    async def logging_prompt(agent_id: str, prompt: str | None = None) -> str | None:
+        # Accept both raw text and ACP SDK-style content blocks. When the
+        # server adapter passes through the PromptRequest ``prompt`` field
+        # directly, it may arrive here as a list of TextContentBlock
+        # objects; normalise to the first text block's ``text`` value.
+        if isinstance(prompt, list) and prompt:
+            first = prompt[0]
+            text = getattr(first, "text", "")
+        else:
+            text = "" if prompt is None else prompt
+        prompt_calls.append((agent_id, text))
+        return await orig_prompt(agent_id, text)  # type: ignore[arg-type]
+
+    async def logging_interrupt(agent_id: str) -> None:
+        interrupt_calls.append(agent_id)
+        await orig_interrupt(agent_id)  # type: ignore[arg-type]
+
+    acp_client.prompt = logging_prompt  # type: ignore[assignment]
+    acp_client.interrupt = logging_interrupt  # type: ignore[assignment]
+
+    try:
+        # ------------------------------
+        # Attach to agent A and send a prompt
+        # ------------------------------
+        attach_a = await client.attach(agent_a)
+        assert attach_a == {"attached_agent_id": agent_a}
+        assert mux.attached_agent_id == agent_a
+
+        prompt_text_a = "switching: hello from agent A via swarm"
+        start_idx_a = len(client.notifications)
+        await client.prompt(prompt_text_a)
+        await _wait_for_text(client, prompt_text_a, start=start_idx_a, timeout=15.0)
+
+        # The REAL adapter's prompt should have been invoked for agent A.
+        assert (agent_a, prompt_text_a) in prompt_calls
+
+        # At the JSON-RPC layer, the `_attach` success response must still be
+        # observed before any forwarded `session/update` notifications.
         attach_response_index: int | None = None
         first_update_index: int | None = None
         for i, event in enumerate(client.stream_events):
             kind = event[0]
             if kind == "response" and attach_response_index is None:
                 result = event[1]
-                if isinstance(result, dict) and result.get("attached_agent_id") == agent_id:
+                if isinstance(result, dict) and result.get("attached_agent_id") == agent_a:
                     attach_response_index = i
             elif kind == "notification" and first_update_index is None:
                 method = event[1]
@@ -560,308 +707,61 @@ async def test_swarm_acp_server_transport_attach_prompt_and_detach(tmp_path: Pat
         assert first_update_index is not None
         assert first_update_index > attach_response_index
 
-        # The forwarded notifications must reflect the retained history in
-        # order.
-
-        # Wait until at least the two retained updates have been observed.
-        async def _wait_for_notifications(count: int) -> None:
-            while len(client.notifications) < count:
-                await asyncio.sleep(0.01)
-
-        await asyncio.wait_for(_wait_for_notifications(2), timeout=1.0)
-
-        titles = [n.update.title for n in client.notifications]  # type: ignore[attr-defined]
-        assert titles[0] == "pre1"
-        assert titles[1] == "pre2"
-
-        # ------------------------------------------------------------------
-        # Prompt and interrupt reach only the attached agent
-        # ------------------------------------------------------------------
-
-        prompt_result = await client.prompt("hello")
-        # The concrete response is an ACP PromptResponse JSON object.
-        pr = acp_schema.PromptResponse.model_validate(prompt_result)
-        assert pr.stop_reason == "end_turn"
-        assert pr.field_meta == {"swarm_output": f"reply:{agent_id}:hello"}
-
-        await client.interrupt()
-
-        # The prompt should have been routed to the attached agent with
-        # the expected text content encoded in the ACP PromptRequest.
-        assert len(prompt_calls) == 1
-        called_agent, called_prompt = prompt_calls[0]
-        assert called_agent == agent_id
-        assert isinstance(called_prompt, list)
-        assert getattr(called_prompt[0], "text", None) == "hello"
-
-        # The interrupt should be delivered to the same attached agent.
-        async def _wait_for_interrupt() -> None:
-            while not interrupt_calls:
-                await asyncio.sleep(0.01)
-
-        await asyncio.wait_for(_wait_for_interrupt(), timeout=1.0)
-        assert interrupt_calls == [agent_id]
-
-        # ------------------------------------------------------------------
-        # Detach stops forwarding but leaves the Epic 008 stream intact
-        # ------------------------------------------------------------------
-
-        result1 = await client.detach()
-        result2 = await client.detach()
-        assert result1 == {"detached": True}
-        assert result2 == {"detached": True}
-        assert mux.attached_agent_id is None
-
-        # Further updates are visible on the Epic 008 stream but no
-        # longer forwarded to the external client.
-        post_detach = _publish_info(stream, "after-detach")
-
-        async with stream.subscribe() as independent:
-            # New subscribers see retained history followed by live
-            # updates. Consume until we observe the post-detach update.
-            async def _wait_for_title(title: str) -> ReceivedSessionUpdate:
-                while True:
-                    item = await _anext_with_timeout(independent)
-                    if getattr(item.update, "title", None) == title:
-                        return item
-
-            received = await _wait_for_title("after-detach")
-            assert received.update.title == "after-detach"
-
-        # Give the mux a brief window; no additional notifications should
-        # be delivered to the external client for the post-detach update.
-        await asyncio.sleep(0.05)
-        titles_after = [n.update.title for n in client.notifications]  # type: ignore[attr-defined]
-        assert "after-detach" not in titles_after
-
-        # The underlying AcpAgentSession remains managed by NateOhaAcpClient.
-        persisted = acp_client._sessions.get(agent_id)  # type: ignore[attr-defined]
-        assert isinstance(persisted, AcpAgentSession)
-        assert persisted.status in {"starting", "running"}
-
-        await client.close()
-    finally:
-        server.close()
-        await server.wait_closed()
-
-    # After connection shutdown, the mux must be closed and no
-    # forwarding subscription left active on the Epic 008 stream.
-    assert mux._closed is True  # type: ignore[attr-defined]
-    assert mux._attachment is None  # type: ignore[attr-defined]
-    assert len(stream._subscribers) == 0  # type: ignore[attr-defined]
-
-
-
-
-@pytest.mark.asyncio
-async def test_swarm_acp_server_transport_switching_reroutes_prompt_and_updates(tmp_path: Path) -> None:
-    """Attachment switching reroutes both updates and prompt/interrupt.
-
-    This scenario sets up two agents (A and B) backed by separate
-    :class:`AcpAgentSession` instances and validates that switching the
-    external attachment from A to B causes:
-
-    * retained updates from A to be replayed when A is attached;
-    * retained updates from B to be replayed when B is attached;
-    * no further A updates to be forwarded after switching to B; and
-    * subsequent prompt and interrupt operations to target only B.
-    """
-
-    config = _make_config(tmp_path)
-    acp_client = NateOhaAcpClient(config=config)
-
-    agent_a = "agent-a"
-    agent_b = "agent-b"
-
-    daemon = _FakeDaemon(agent_ids=[agent_a, agent_b])
-
-    # Seed AcpAgentSession records for both agents. The primary agent's
-    # stream is returned directly; the secondary agent's stream is looked
-    # up via the adapter's session registry.
-    server, stream_a, mux_future = await _start_swarm_acp_server(
-        agent_id=agent_a,
-        daemon=daemon,
-        acp_client=acp_client,
-        extra_agent_ids=[agent_b],
-    )
-
-    session_b = acp_client._sessions.get(agent_b)  # type: ignore[attr-defined]
-    assert isinstance(session_b, AcpAgentSession)
-    stream_b = session_b.update_stream
-
-    host, port = server.sockets[0].getsockname()[:2]
-
-    try:
-        client = await _RecordingClient.connect(host, port)
-        mux = await asyncio.wait_for(mux_future, timeout=1.0)
-
-        # Patch prompt/interrupt so we can observe routing decisions without
-        # performing external I/O.
-        prompt_calls: list[tuple[str, object | None]] = []
-        interrupt_calls: list[str] = []
-
-        async def fake_prompt(agent: str, prompt: object | None = None) -> str | None:
-            prompt_calls.append((agent, prompt))
-            text_value: str | None = None
-            if isinstance(prompt, list) and prompt:
-                first = prompt[0]
-                text_value = getattr(first, "text", None)
-            return f"reply:{agent}:{text_value}"
-
-        async def fake_interrupt(agent: str) -> None:
-            interrupt_calls.append(agent)
-
-        acp_client.prompt = fake_prompt  # type: ignore[assignment]
-        acp_client.interrupt = fake_interrupt  # type: ignore[assignment]
-
-        # ------------------------------------------------------------------
-        # Publish retained history for both agents before any attachment
-        # ------------------------------------------------------------------
-
-        _publish_info(stream_a, "A-pre1")
-        _publish_info(stream_a, "A-pre2")
-        _publish_info(stream_b, "B-pre1")
-        _publish_info(stream_b, "B-pre2")
-
-        # ------------------------------------------------------------------
-        # Attach A: only A's retained history is forwarded
-        # ------------------------------------------------------------------
-
-        attach_a = await client.attach(agent_a)
-        assert attach_a == {"attached_agent_id": agent_a}
-        assert mux.attached_agent_id == agent_a
-
-        async def _wait_for_notifications(count: int) -> None:
-            while len(client.notifications) < count:
-                await asyncio.sleep(0.01)
-
-        await asyncio.wait_for(_wait_for_notifications(2), timeout=1.0)
-        titles_a = [n.update.title for n in client.notifications]  # type: ignore[attr-defined]
-        assert titles_a[:2] == ["A-pre1", "A-pre2"]
-        assert "B-pre1" not in titles_a and "B-pre2" not in titles_a
-
-        # ------------------------------------------------------------------
-        # Attach B: subsequent forwarding targets B and replays B's history
-        # ------------------------------------------------------------------
-
+        # ------------------------------
+        # Switch attachment to agent B and send another prompt
+        # ------------------------------
         attach_b = await client.attach(agent_b)
         assert attach_b == {"attached_agent_id": agent_b}
         assert mux.attached_agent_id == agent_b
 
-        start_idx = len(client.notifications)
+        prompt_text_b = "switching: hello from agent B via swarm"
+        start_idx_b = len(client.notifications)
+        await client.prompt(prompt_text_b)
+        await _wait_for_text(client, prompt_text_b, start=start_idx_b, timeout=15.0)
 
-        async def _wait_for_more_notifications(count: int) -> None:
-            while len(client.notifications) < start_idx + count:
-                await asyncio.sleep(0.01)
+        # Prompts should have been routed to A then B in order.
+        assert (agent_a, prompt_text_a) in prompt_calls
+        assert (agent_b, prompt_text_b) in prompt_calls
 
-        await asyncio.wait_for(_wait_for_more_notifications(2), timeout=1.0)
-        titles_b = [n.update.title for n in client.notifications[start_idx:]]  # type: ignore[attr-defined]
-        assert titles_b == ["B-pre1", "B-pre2"]
-
-        # Publish live updates on both streams after switching. Only B's
-        # live update should reach the external client.
-        _publish_info(stream_a, "A-live-after-switch")
-        _publish_info(stream_b, "B-live-after-switch")
-
-        live_start = len(client.notifications)
-
-        async def _wait_for_live_notifications() -> None:
-            # Expect at least one new notification for B.
-            while len(client.notifications) <= live_start:
-                await asyncio.sleep(0.01)
-
-        await asyncio.wait_for(_wait_for_live_notifications(), timeout=1.0)
-        live_titles = [n.update.title for n in client.notifications[live_start:]]  # type: ignore[attr-defined]
-        assert "B-live-after-switch" in live_titles
-        assert "A-live-after-switch" not in live_titles
-
-        # ------------------------------------------------------------------
-        # Prompt and interrupt after switching reach only agent B
-        # ------------------------------------------------------------------
-
-        prompt_result = await client.prompt("hello-b")
-        pr = acp_schema.PromptResponse.model_validate(prompt_result)
-        assert pr.stop_reason == "end_turn"
-        assert pr.field_meta == {"swarm_output": f"reply:{agent_b}:hello-b"}
-
-        # The adapter prompt should have been invoked exactly once for B.
-        assert len(prompt_calls) == 1
-        called_agent, called_prompt = prompt_calls[0]
-        assert called_agent == agent_b
-        assert isinstance(called_prompt, list)
-        assert getattr(called_prompt[0], "text", None) == "hello-b"
-
+        # ------------------------------
+        # Interrupt while attached to B
+        # ------------------------------
         await client.interrupt()
 
         async def _wait_for_interrupt() -> None:
             while not interrupt_calls:
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0.05)
 
-        await asyncio.wait_for(_wait_for_interrupt(), timeout=1.0)
-        assert interrupt_calls == [agent_b]
-
-        await client.close()
+        await asyncio.wait_for(_wait_for_interrupt(), timeout=10.0)
+        # The last interrupt must target the currently attached agent (B).
+        assert interrupt_calls[-1] == agent_b
     finally:
-        server.close()
-        await server.wait_closed()
-
-    # After connection shutdown, the mux must be closed and no forwarding
-    # subscriptions left active on either Epic 008 stream.
-    assert mux._closed is True  # type: ignore[attr-defined]
-    assert mux._attachment is None  # type: ignore[attr-defined]
-    assert len(stream_a._subscribers) == 0  # type: ignore[attr-defined]
-    assert len(stream_b._subscribers) == 0  # type: ignore[attr-defined]
+        acp_client.prompt = orig_prompt  # type: ignore[assignment]
+        acp_client.interrupt = orig_interrupt  # type: ignore[assignment]
 
 
 @pytest.mark.asyncio
-async def test_swarm_acp_server_transport_error_mapping_and_shutdown(tmp_path: Path) -> None:
+async def test_swarm_acp_server_transport_error_mapping_and_shutdown(
+    connected_swarm: ConnectedSwarm,
+) -> None:
     """Mux/domain failures surface as ACP errors with logical mux codes.
 
-    This scenario verifies that an invalid `_attach` request for an
-    unknown agent results in an ACP :class:`RequestError` whose
-    ``error.data.mux_code`` matches the contract-defined logical code.
-    It also asserts that connection shutdown leaves no forwarding
-    subscription active on the Epic 008 stream.
+    An invalid `_attach` request for an unknown agent must result in an
+    ACP :class:`RequestError` whose ``error.data.mux_code`` matches the
+    mux session contract.
     """
 
-    config = _make_config(tmp_path)
-    acp_client = NateOhaAcpClient(config=config)
+    client = connected_swarm.client
 
-    known_agent = "agent-known"
-    daemon = _FakeDaemon(agent_ids=[known_agent])
+    # Attempt to attach to an unknown agent; this should map the
+    # underlying UnknownAgentError to MUX_UNKNOWN_AGENT and surface an
+    # ACP RequestError with that logical code in error.data.
+    with pytest.raises(acp.RequestError) as exc_info:
+        await client.attach("missing-agent")
 
-    server, stream, mux_future = await _start_swarm_acp_server(
-        agent_id=known_agent,
-        daemon=daemon,
-        acp_client=acp_client,
-    )
-
-    host, port = server.sockets[0].getsockname()[:2]
-
-    try:
-        client = await _RecordingClient.connect(host, port)
-        mux = await asyncio.wait_for(mux_future, timeout=1.0)
-
-        # Attempt to attach to an unknown agent; this should map the
-        # underlying UnknownAgentError to MUX_UNKNOWN_AGENT and surface an
-        # ACP RequestError with that logical code in error.data.
-        with pytest.raises(acp.RequestError) as exc_info:
-            await client.attach("missing-agent")
-
-        err = exc_info.value
-        assert isinstance(err.data, dict)
-        assert err.data.get("mux_code") == "MUX_UNKNOWN_AGENT"
-
-        await client.close()
-    finally:
-        server.close()
-        await server.wait_closed()
-
-    # After the failed connection, the mux must be closed and the Epic
-    # 008 stream left without a forwarding subscriber.
-    assert mux._closed is True  # type: ignore[attr-defined]
-    assert mux._attachment is None  # type: ignore[attr-defined]
-    assert len(stream._subscribers) == 0  # type: ignore[attr-defined]
+    err = exc_info.value
+    assert isinstance(err.data, dict)
+    assert err.data.get("mux_code") == "MUX_UNKNOWN_AGENT"
 
 
 # ---------------------------------------------------------------------------

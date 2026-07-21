@@ -2,7 +2,7 @@
 
 This document describes how to validate SwarmACPMux behavior **via tests** once the feature is implemented. It is aligned with the existing runtime orchestrator quickstart (spec 001) and the project’s `uv`/pytest workflow.
 
-It focuses on integration tests under `tests/integration/runtime_acp/` and unit tests for the mux itself.
+It focuses on integration tests under `tests/integration/runtime_acp/` and `tests/integration/acp/`, plus unit tests for the mux and adapter.
 
 ---
 
@@ -39,21 +39,29 @@ Once SwarmACPMux and its adapter integration are implemented, you should be able
 - `tests/unit/runtime/test_swarm_acp_mux.py`
   - Unit tests for mux behavior: attachment lifecycle, forwarding, error model, concurrency, and `wait_failed()` semantics.
 
+- `tests/unit/runtime/test_swarm_acp_server.py`
+  - Unit tests for the Swarm ACP server adapter: reserved-control routing, error mapping, and connection lifetime behavior.
+
 - `tests/integration/runtime_acp/test_runtime_daemon_acp_async_real_path_epic005.py`
   - Existing baseline for the async ACP event path without the mux.
 
 - `tests/integration/acp/test_swarm_acp_mux_real_path.py`
-  - New real-path test that exercises a similar scenario through the mux and Swarm ACP server adapter.
+  - Real-path test that exercises a similar scenario through the mux and Swarm ACP server adapter.
 
 - `tests/integration/acp/test_reserved_swarm_controls.py`
-  - New test focusing on `_attach`, `_detach`, `_swarm_status`, `_agent_detail` behavior and error codes.
+  - Tests focusing on `_attach`, `_detach`, `_swarm_status`, `_agent_detail` behavior and error codes.
+
+- `tests/integration/acp/test_swarm_acp_server_transport.py`
+  - Real ACP transport tests for the Swarm ACP server adapter over JSON-RPC.
 
 Run these with `uv run pytest`:
 
 ```bash
 uv run pytest tests/unit/runtime/test_swarm_acp_mux.py -vv
+uv run pytest tests/unit/runtime/test_swarm_acp_server.py -vv
 uv run pytest tests/integration/acp/test_swarm_acp_mux_real_path.py -vv
 uv run pytest tests/integration/acp/test_reserved_swarm_controls.py -vv
+uv run pytest tests/integration/acp/test_swarm_acp_server_transport.py -vv
 ```
 
 ---

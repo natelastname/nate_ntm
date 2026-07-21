@@ -351,7 +351,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
 
 ### US3: Addendum
 
-- [ ] T027.1 [US3] Implement the concrete Swarm ACP request adapter in `src/nate_ntm/runtime/swarm_acp_server.py`:
+- [x] T027.1 [US3] Implement the concrete Swarm ACP request adapter in `src/nate_ntm/runtime/swarm_acp_server.py`:
   - decode inbound ACP requests for `_swarm_status`, `_agent_detail`, `_attach`, and `_detach`;
   - route ordinary reserved controls through `SwarmACPServerSession.handle_reserved_control()`;
   - route `_attach` through `SwarmACPServerSession.attach(…, acknowledge=…)`;
@@ -361,7 +361,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
   - forward agent session updates through the ACP connection;
   - close the session deterministically when inbound processing, forwarding, or the connection fails.
 
-- [ ] T027.2 [US3] Add macro-level ACP adapter integration tests in `tests/integration/acp/test_swarm_acp_server_transport.py` using the real ACP transport and production server adapter. Verify:
+- [x] T027.2 [US3] Add macro-level ACP adapter integration tests in `tests/integration/acp/test_swarm_acp_server_transport.py` using the real ACP transport and production server adapter. Verify:
   - reserved request decoding and response encoding;
   - `_attach` success response is observed before retained or live agent updates;
   - ordinary prompts and interrupts reach only the attached agent;
@@ -373,7 +373,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
 
 **Purpose**: Verify that the implementation matches the approved design and that the complete repository remains healthy.
 
-- [ ] T028 Verify implementation conformance against:
+- [x] T028 Verify implementation conformance against:
 
   - `specs/009-swarm-acp-mux/spec.md`;
   - `specs/009-swarm-acp-mux/data-model.md`;
@@ -381,7 +381,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
   - `specs/009-swarm-acp-mux/quickstart.md`.
 
   Correct implementation defects in `src/nate_ntm/runtime/swarm_acp_mux.py` and `src/nate_ntm/runtime/swarm_acp_server.py`. Change normative documents only when an implementation discovery demonstrates a genuine design defect and the design change is explicit.
-- [ ] T029 Run the focused Epic 009 tests:
+- [x] T029 Run the focused Epic 009 tests:
 
   ```
   uv run pytest tests/unit/runtime/test_swarm_acp_mux.py -vv
@@ -391,14 +391,14 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
   ```
 
   Fix all failures in the implementation or tests. Do not weaken assertions to accommodate incorrect behavior.
-- [ ] T030 Run the complete default test suite with:
+- [x] T030 Run the complete default test suite with:
 
   ```
   uv run pytest
   ```
 
   The default command MUST run the complete repository test suite. Fix any regressions caused by Epic 009.
-- [ ] T031 Update `specs/009-swarm-acp-mux/quickstart.md` only where final production module names, commands, or verified test paths differ from the approved document. Do not add speculative files or duplicate implementation guidance.
+- [x] T031 Update `specs/009-swarm-acp-mux/quickstart.md` only where final production module names, commands, or verified test paths differ from the approved document. Do not add speculative files or duplicate implementation guidance.
 
 ------------------------------------------------------------------------
 

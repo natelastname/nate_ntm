@@ -27,13 +27,12 @@ transitions.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Optional
-
-import logging
 
 from ..config.runtime_config import RuntimeConfig
 from .acp_client import BaseAcpClient
@@ -41,10 +40,10 @@ from .adapters import RuntimeAdapters, create_runtime_adapters
 from .agent_mail_client import BaseAgentMailClient, McpAgentMailClient
 from .agents import AgentSupervisor
 from .metadata_store import MetadataStore
+from .nate_oha_launch import build_effective_nate_oha_config
 from .scheduler import RuntimeScheduler
 from .state import AgentStatus, RuntimeState, RuntimeStatus
 from .swarm_state import AgentState, SwarmState
-from .nate_oha_launch import build_effective_nate_oha_config
 
 __all__ = [
     "StartupMode",
@@ -678,7 +677,7 @@ class RuntimeDaemon:
             "agent_counts": self._compute_agent_counts(),
         }
 
-    def get_swarm_overview(self) -> dict[str, object]:
+    def get_swarm_status(self) -> dict[str, object]:
         """Return a JSON-serializable snapshot for ``swarm.get_overview``.
 
         In addition to joining persisted metadata with live runtime

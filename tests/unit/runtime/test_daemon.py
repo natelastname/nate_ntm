@@ -11,33 +11,36 @@ Covers Phase 2 tasks T008 and T037 at the Python API level:
 
 from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
 import os
 import socket
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Dict
 
 import pytest
 
-from dataclasses import dataclass, field
-from typing import Dict
-
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
-from nate_ntm.runtime.agent_mail_client import BaseAgentMailClient
+from nate_ntm.runtime.acp_client import (
+    AcpAgentStatus,
+    AcpClientError,
+    BaseAcpClient,
+    NateOhaAcpClient,
+)
 from nate_ntm.runtime.adapters import RuntimeAdapters
-from nate_ntm.runtime.acp_client import AcpAgentStatus, AcpClientError, BaseAcpClient, NateOhaAcpClient
-from nate_ntm.runtime.events import AgentEventSource
-from nate_ntm.runtime.nate_oha_launch import build_effective_nate_oha_config
-
+from nate_ntm.runtime.agent_mail_client import BaseAgentMailClient
 from nate_ntm.runtime.daemon import (
     MetadataAlreadyExistsError,
     MetadataMissingError,
     RuntimeDaemon,
     RuntimeStartupError,
     StartupMode,
-    check_startup_preconditions,
     _map_acp_state_to_last_known_status,
+    check_startup_preconditions,
 )
+from nate_ntm.runtime.events import AgentEventSource
 from nate_ntm.runtime.metadata_store import MetadataStore
+from nate_ntm.runtime.nate_oha_launch import build_effective_nate_oha_config
 from nate_ntm.runtime.state import AgentRuntimeState, AgentStatus, RuntimeStatus
 from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 
@@ -482,7 +485,7 @@ def test_runtime_daemon_get_swarm_overview_joins_metadata_and_runtime_state(tmp_
     }
     daemon.state.status = RuntimeStatus.RUNNING
 
-    overview = daemon.get_swarm_overview()
+    overview = daemon.get_swarm_status()
 
     assert overview["swarm_id"] == config.swarm_id
     assert overview["project_path"] == str(config.project_path)

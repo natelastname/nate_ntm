@@ -568,8 +568,23 @@ def build_swarm_acp_request_handler(
                 # Malformed base ACP request -> JSON-RPC invalid_params.
                 raise RequestError.invalid_params({"reason": "Invalid PromptRequest"}) from exc
 
+            # Map the structured ACP prompt blocks to the logical mux prompt
+            # contract, which currently exposes a simple UTF-8 text string.
+            #
+            # For Epic 009 we restrict ourselves to text-only prompts. When
+            # multiple text blocks are present, we concatenate their ``text``
+            # fields in order; non-text content blocks are ignored. This keeps
+            # the Swarm ACP adapter compatible with the existing
+            # :class:`NateOhaAcpClient` interface without introducing a second
+            # prompt representation.
+            prompt_text_parts: list[str] = []
+            for block in request.prompt:
+                if isinstance(block, acp_schema.TextContentBlock) and getattr(block, "text", None):
+                    prompt_text_parts.append(block.text)
+            prompt_text = "".join(prompt_text_parts)
+
             try:
-                result_text = await session.prompt(request.prompt)
+                result_text = await session.prompt(prompt_text)
             except BaseException as exc:  # pragma: no cover - mapped by _raise_acp_error_from_mux
                 _raise_acp_error_from_mux(exc)
 
