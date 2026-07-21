@@ -152,7 +152,7 @@ async def test_real_runtime_create_swarm_acp_and_resume(tmp_path: Path) -> None:
         agent_mail = metadata.nate_oha_config.features.agent_mail
         assert agent_mail.enabled is True
         assert agent_mail.agent_identity
-        assert agent_mail.registration_token
+        assert agent_mail.credentials_ref
 
     internal = daemon.acp_client
     assert isinstance(internal, NateOhaAcpClient)
