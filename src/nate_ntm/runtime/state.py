@@ -26,20 +26,13 @@ class AgentStatus(str, Enum):
 
 @dataclass(slots=True)
 class AgentRuntimeState:
-    """Ephemeral lifecycle state for one agent."""
-
     agent_id: str
     status: AgentStatus = AgentStatus.STARTING
-    current_turn_id: str | None = None
     last_error: str | None = None
-    subprocess_handle: object | None = None
-    acp_connection: object | None = None
 
 
 @dataclass(slots=True)
 class RuntimeState:
-    """Top-level runtime state owned by :class:`RuntimeDaemon`."""
-
     config: RuntimeConfig
     agents: dict[str, AgentRuntimeState] = field(default_factory=dict)
     status: RuntimeStatus = RuntimeStatus.STARTING
