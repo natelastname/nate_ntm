@@ -3,7 +3,7 @@ from __future__ import annotations
 """Typed client for nate-ntm's external Swarm ACP endpoint."""
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any, TypeAlias
 
 from acp import connect_to_agent, text_block
@@ -90,7 +90,7 @@ class SwarmACPClient:
         *,
         session_id: str,
         receive_timeout: float | None = None,
-        observers: Iterable[callable] = (),
+        observers: Iterable[Callable[[StreamEvent], None]] = (),
     ) -> SwarmACPClient:
         """Connect to an already-running Swarm ACP TCP endpoint."""
 
