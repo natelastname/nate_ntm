@@ -103,7 +103,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
 
 ### Tests for User Story 1
 
-- [ ] T004 [US1] Add attachment transaction tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
+- [x] T004 [US1] Add attachment transaction tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
 
   - successful first attachment;
   - `AgentSessionNotActive` propagation;
@@ -113,7 +113,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
   - `PreparedAttachment.newly_prepared=False` for a healthy same-agent attachment;
   - stale prepared handles cannot activate or remove a newer attachment.
 
-- [ ] T005 [US1] Add acknowledgment and rollback tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
+- [x] T005 [US1] Add acknowledgment and rollback tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
 
   - no replay or live forwarding before activation;
   - successful activation begins retained replay before live delivery;
@@ -121,7 +121,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
   - acknowledgment failure leaves a reused healthy same-agent attachment intact;
   - `abort_attachment()` with a stale handle does not alter the current attachment.
 
-- [ ] T006 [US1] Add forwarding and switching tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
+- [x] T006 [US1] Add forwarding and switching tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
 
   - forwarding the underlying `SessionUpdate` unchanged;
   - preserving the order yielded by Epic 008;
@@ -131,7 +131,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
   - preventing old-agent output after the new-agent acknowledgment;
   - preventing an obsolete forwarding task from clearing a newer attachment.
 
-- [ ] T007 [US1] Add agent-operation and detach tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
+- [x] T007 [US1] Add agent-operation and detach tests to `tests/unit/runtime/test_swarm_acp_mux.py` covering:
 
   - `prompt()` delegates to the attached agent;
   - `interrupt()` delegates to the attached agent;
@@ -198,7 +198,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
   - close cancels pending `wait_failed()` callers without reporting a failure;
   - subsequent public operations raise `SwarmACPMuxClosedError`.
 
-- [ ] T014 [US1] Implement the minimal production session and `_attach`/`_detach` flow in `src/nate_ntm/runtime/swarm_acp_server.py`:
+- [x] T014 [US1] Implement the minimal production session and `_attach`/`_detach` flow in `src/nate_ntm/runtime/swarm_acp_server.py`:
 
   - create exactly one `SwarmACPMux` per external ACP session;
   - execute `_attach` as prepare → acknowledgment → activate;
@@ -207,7 +207,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
   - route ordinary prompt and interrupt operations through the mux;
   - serialize `_attach`, `_detach`, and session shutdown for one external session.
 
-- [ ] T015 [US1] Add the MVP real-path test in `tests/integration/acp/test_swarm_acp_mux_real_path.py` using the production code in `src/nate_ntm/runtime/swarm_acp_server.py`. Verify:
+- [x] T015 [US1] Add the MVP real-path test in `tests/integration/acp/test_swarm_acp_mux_real_path.py` using the production code in `src/nate_ntm/runtime/swarm_acp_server.py`. Verify:
 
   - a real Epic 008 subscription is established before acknowledgment;
   - no retained or live update appears before acknowledgment;
