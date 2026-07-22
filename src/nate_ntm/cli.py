@@ -17,12 +17,7 @@ from pydantic import ValidationError
 from .api.client import JsonRpcClientError, JsonRpcHttpClient
 from .api.models import AgentDetailResult, RuntimeStatusResult, SwarmOverviewResult
 from .config.runtime_config import RuntimeConfig, load_runtime_config
-from .runtime.daemon import (
-    MetadataAlreadyExistsError,
-    MetadataMissingError,
-    RuntimeDaemon,
-    StartupMode,
-)
+from .runtime.daemon import MetadataAlreadyExistsError, MetadataMissingError, StartupMode
 from .runtime.metadata_store import MetadataStore
 from .runtime.runner import run_runtime_with_control_api
 from .runtime.swarm_state import AgentState, SwarmState
@@ -141,15 +136,20 @@ def runtime_start(
         None, "--llm-api-key", envvar="NATE_NTM_LLM_API_KEY"
     ),
     prompt_soul_content: str | None = typer.Option(None, "--prompt-soul-content"),
-    with_control_api: bool = typer.Option(False, "--with-control-api"),
+    acp_host: str = typer.Option("127.0.0.1", "--acp-host", envvar="NATE_NTM_ACP_HOST"),
+    acp_port: int = typer.Option(8766, "--acp-port", envvar="NATE_NTM_ACP_PORT"),
+    control_host: str | None = typer.Option(None, "--control-host"),
+    control_port: int | None = typer.Option(None, "--control-port"),
 ) -> None:
-    """Create or resume a swarm runtime."""
+    """Create or resume a swarm runtime with TCP ACP and control endpoints."""
 
     if agents is not None:
         if mode is CliStartupMode.RESUME:
             raise typer.BadParameter("--agents can only be used with --mode=create")
         if agents <= 0:
             raise typer.BadParameter("--agents must be a positive integer")
+    if not 0 <= acp_port <= 65535:
+        raise typer.BadParameter("--acp-port must be between 0 and 65535")
 
     config = _resolve_runtime_config(
         project,
@@ -163,21 +163,28 @@ def runtime_start(
         StartupMode.CREATE if mode is CliStartupMode.CREATE else StartupMode.RESUME
     )
 
+    typer.echo(f"Swarm ACP: tcp://{acp_host}:{acp_port}", err=True)
+    typer.echo(
+        f"Control API: http://{control_host or config.control_api_host}:"
+        f"{control_port if control_port is not None else config.control_api_port}",
+        err=True,
+    )
     try:
-        if with_control_api:
-            run_runtime_with_control_api(config, startup_mode, agent_count=agents)
-            return
-        daemon = (
-            RuntimeDaemon.create(config, agent_count=agents)
-            if startup_mode is StartupMode.CREATE
-            else RuntimeDaemon.resume(config)
+        run_runtime_with_control_api(
+            config,
+            startup_mode,
+            host=control_host,
+            port=control_port,
+            acp_host=acp_host,
+            acp_port=acp_port,
+            agent_count=agents,
         )
     except (MetadataAlreadyExistsError, MetadataMissingError) as exc:
+        typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
-
-    daemon.start()
-    daemon.request_shutdown()
-    daemon.mark_stopped()
+    except OSError as exc:
+        typer.echo(f"Failed to start runtime: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 def _parse_params(pairs: list[str]) -> dict[str, Any]:
