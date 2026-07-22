@@ -1,4 +1,4 @@
-"""Run a RuntimeDaemon with its command-only FastAPI control API."""
+"""Run a RuntimeDaemon with its control API and external ACP TCP server."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from ..api.server import RuntimeApiServer
 from ..config.runtime_config import RuntimeConfig
 from .adapters import RuntimeAdapters, create_runtime_adapters
 from .daemon import RuntimeDaemon, StartupMode
+from .swarm_acp_tcp import SwarmACPTCPServer
 
 __all__ = [
     "RuntimeControlContext",
@@ -33,6 +34,9 @@ class RuntimeControlContext:
     app: API
     host: str
     port: int
+    acp_host: str
+    acp_port: int
+    acp_server: SwarmACPTCPServer
     bound_port: int = 0
     _uvicorn_server: uvicorn.Server | None = field(default=None, repr=False)
     _server_task: asyncio.Task[None] | None = field(default=None, repr=False)
@@ -45,6 +49,8 @@ def create_runtime_control_context(
     *,
     host: str | None = None,
     port: int | None = None,
+    acp_host: str = "127.0.0.1",
+    acp_port: int = 8766,
     agent_count: int | None = None,
     adapters: RuntimeAdapters | None = None,
 ) -> RuntimeControlContext:
@@ -61,6 +67,12 @@ def create_runtime_control_context(
         raise ValueError(f"Unsupported startup mode: {mode!r}")
 
     api_server = RuntimeApiServer(daemon=daemon)
+    acp_server = SwarmACPTCPServer(
+        daemon=daemon,
+        agent_client=adapters.acp,
+        host=acp_host,
+        port=acp_port,
+    )
     return RuntimeControlContext(
         config=config,
         mode=mode,
@@ -69,6 +81,9 @@ def create_runtime_control_context(
         app=create_runtime_api_app(api_server),
         host=host or config.control_api_host,
         port=port if port is not None else config.control_api_port,
+        acp_host=acp_host,
+        acp_port=acp_port,
+        acp_server=acp_server,
     )
 
 
@@ -114,15 +129,19 @@ async def serve_runtime_control_api(
     poll_interval: float = 0.1,
 ) -> None:
     await _start_api_server(ctx)
+    await ctx.acp_server.start()
     try:
         ctx.daemon.start()
         while not ctx.daemon.state.shutdown_requested:
             await asyncio.sleep(poll_interval)
     finally:
         try:
-            await _stop_api_server(ctx)
+            await ctx.acp_server.close()
         finally:
-            ctx.daemon.mark_stopped()
+            try:
+                await _stop_api_server(ctx)
+            finally:
+                ctx.daemon.mark_stopped()
 
 
 async def run_runtime_with_control_api_async(
@@ -131,6 +150,8 @@ async def run_runtime_with_control_api_async(
     *,
     host: str | None = None,
     port: int | None = None,
+    acp_host: str = "127.0.0.1",
+    acp_port: int = 8766,
     poll_interval: float = 0.1,
     agent_count: int | None = None,
     adapters: RuntimeAdapters | None = None,
@@ -140,6 +161,8 @@ async def run_runtime_with_control_api_async(
         mode,
         host=host,
         port=port,
+        acp_host=acp_host,
+        acp_port=acp_port,
         agent_count=agent_count,
         adapters=adapters,
     )
@@ -152,6 +175,8 @@ def run_runtime_with_control_api(
     *,
     host: str | None = None,
     port: int | None = None,
+    acp_host: str = "127.0.0.1",
+    acp_port: int = 8766,
     poll_interval: float = 0.1,
     agent_count: int | None = None,
     adapters: RuntimeAdapters | None = None,
@@ -162,6 +187,8 @@ def run_runtime_with_control_api(
             mode,
             host=host,
             port=port,
+            acp_host=acp_host,
+            acp_port=acp_port,
             poll_interval=poll_interval,
             agent_count=agent_count,
             adapters=adapters,
